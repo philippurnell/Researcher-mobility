@@ -1,5 +1,5 @@
 
--- Step 1: First publication year
+-- First publication year
 IF OBJECT_ID('tempdb..#first_pub_year', 'U') IS NOT NULL 
     DROP TABLE #first_pub_year;
 
@@ -24,7 +24,7 @@ CREATE INDEX ix_first_pub_year
     ON #first_pub_year (researcher_id, first_pub_year);
 
 
--- Temp table of Leiden Ranking Universities (Open Edition 2025)
+-- Leiden Ranking Universities (Open Edition 2025)
 IF OBJECT_ID('tempdb..#LR_Open_Unis', 'LRU') IS NOT NULL 
     DROP TABLE #LR_Open_Unis;
 
@@ -36,7 +36,7 @@ FROM leiden_ranking_open_edition_2025..university
 -- 2831
 
 
--- Step 2 – First year affiliations restricted to Leiden Ranking universities 
+-- First publication year at Leiden Ranking universities 
 IF OBJECT_ID('tempdb..#first_year_leiden', 'U') IS NOT NULL 
     DROP TABLE #first_year_leiden;
 
@@ -71,7 +71,7 @@ CREATE INDEX ix_first_year_leiden
     ON #first_year_leiden (ror_id, country_code, researcher_id);
 
 
--- Step 3a: First year university affiliation table
+-- First year university affiliation table
 IF OBJECT_ID('tempdb..#first_paper_university_counts_2000_2010', 'U') IS NOT NULL
     DROP TABLE #first_paper_university_counts_2000_2010;
 
@@ -98,7 +98,7 @@ ORDER BY
 
 
 
--- Step 3b: First year country affiliation table
+-- First year country affiliation table
 IF OBJECT_ID('tempdb..#first_paper_country_counts_2000_2010', 'U') IS NOT NULL
     DROP TABLE #first_paper_country_counts_2000_2010;
 
@@ -115,7 +115,6 @@ GROUP BY
     c.country_code,
     c.country;
 
--- See the result
 SELECT
     country_code,
     country_name,
@@ -126,7 +125,7 @@ ORDER BY
     n_researchers_first_paper DESC;
 
 
--- Step 4 – Last (most recent) publication year per researcher
+-- Last (most recent) publication year
 IF OBJECT_ID('tempdb..#last_pub_year', 'U') IS NOT NULL 
     DROP TABLE #last_pub_year;
 
@@ -149,13 +148,11 @@ GROUP BY
     pa.researcher_id;
 -- 926917
 
-
 CREATE INDEX ix_last_pub_year
     ON #last_pub_year (researcher_id, last_pub_year);
 
 
--- Step 4 – Last-year affiliations restricted to Leiden Ranking universities
-
+-- Last publication year at Leiden Ranking universities
 IF OBJECT_ID('tempdb..#last_year_leiden', 'U') IS NOT NULL 
     DROP TABLE #last_year_leiden;
 
@@ -189,8 +186,7 @@ FROM
 CREATE INDEX ix_last_year_leiden
     ON #last_year_leiden (researcher_id, ror_id, country_code);
 
-
--- Step 5a: Last year university affiliation table
+-- Last year university affiliation table
 IF OBJECT_ID('tempdb..#last_paper_university_counts', 'U') IS NOT NULL
     DROP TABLE #last_paper_university_counts;
 
@@ -209,7 +205,7 @@ SELECT *
 FROM #last_paper_university_counts
 ORDER BY n_researchers_last_paper DESC;
 
--- Step 5b: Last year country affiliation table
+-- Last year country affiliation table
 IF OBJECT_ID('tempdb..#last_paper_country_counts', 'U') IS NOT NULL
     DROP TABLE #last_paper_country_counts;
 
@@ -231,12 +227,7 @@ FROM #last_paper_country_counts
 ORDER BY n_researchers_last_paper DESC;
 
 
--- Classify researchers into three groups:
--- Still in Leiden system (recent pub 2020–2025 + Leiden Ranking affiliation)
--- Active Outside Leiden system (recent pub but no Leiden Ranking affiliation)
--- No Recent Publication (no pub 2020–2025)
---------------------------------------------------------------*/
-
+-- Researcher status classification 2020-2025 - World
 IF OBJECT_ID('tempdb..#researcher_status', 'U') IS NOT NULL
     DROP TABLE #researcher_status;
 
@@ -244,7 +235,7 @@ SELECT
     fy.researcher_id,
 
     CASE
-        WHEN lyl.researcher_id IS NOT NULL THEN 'Still in Leiden'                     -- Category 1
+        WHEN lyl.researcher_id IS NOT NULL THEN 'Still in Leiden'                    -- Category 1
         WHEN lpy.researcher_id IS NOT NULL THEN 'Active outside Leiden'              -- Category 2
         ELSE 'No publications 2020-2025'                                             -- Category 3
     END AS researcher_status,
@@ -264,8 +255,16 @@ FROM
     ) lpy ON fy.researcher_id = lpy.researcher_id;
 -- 3010866
 
--- Researcher status per origin country
---------------------------------------------------------------*/
+-- Result World
+SELECT
+    researcher_status,
+    COUNT(*) AS n_researchers
+FROM
+    #researcher_status
+GROUP BY
+    researcher_status;
+
+-- Researcher status classification 2020-2025 - By country
 IF OBJECT_ID('tempdb..#origin_totals', 'U') IS NOT NULL
     DROP TABLE #origin_totals;
 
@@ -276,17 +275,7 @@ INTO #origin_totals
 FROM
     #researcher_status
 GROUP BY
-    origin_country;
-
-
--- Result World
-SELECT
-    researcher_status,
-    COUNT(*) AS n_researchers
-FROM
-    #researcher_status
-GROUP BY
-    researcher_status;
+    origin_country
 	
 -- Result by Country
 SELECT
@@ -314,7 +303,6 @@ ORDER BY
 -- Forward looking analysis
 
 -- Count total researchers by origin country
-
 IF OBJECT_ID('tempdb..#origin_country_totals', 'U') IS NOT NULL 
     DROP TABLE #origin_country_totals;
 
@@ -348,7 +336,6 @@ GROUP BY
 
 
 -- Identify the 12 largest origin countries by Leiden active researchers
-
 IF OBJECT_ID('tempdb..#top_origin_countries', 'U') IS NOT NULL 
     DROP TABLE #top_origin_countries;
 
@@ -362,10 +349,7 @@ ORDER BY
     n_origin_leiden_active DESC;
 
 
--- Country-to-country flows (origin → destination)
-
-   -- Exclude NULLs and only include valid destination countries
-
+-- Country-to-country flows (origin to destination)
 IF OBJECT_ID('tempdb..#country_flows_leiden', 'U') IS NOT NULL
     DROP TABLE #country_flows_leiden;
 
@@ -386,9 +370,7 @@ GROUP BY
     ly.country_code;
 
 
-
 --  Rank destinations within each top origin country
-
 IF OBJECT_ID('tempdb..#ranked_destinations_leiden', 'U') IS NOT NULL
     DROP TABLE #ranked_destinations_leiden;
 
@@ -404,11 +386,7 @@ INTO #ranked_destinations_leiden
 FROM
     #country_flows_leiden cf;
 
-
-
---  Show top 20 destinations for each of the 12 origins
-    -- Researchers in destination country as a share of Leiden-active origin-country researchers
-
+--  Top 20 destinations for each of the 12 origin countries as a share of Leiden-active origin-country researchers
 SELECT
     r.origin_country,
     c1.country AS origin_country_name,
@@ -432,8 +410,7 @@ ORDER BY
     origin_country_name,
     r.destination_rank;
 
-
--- Domestic retention share
+-- Domestic retention (staying in the same country)
 SELECT
     cf.origin_country,
     c.country AS origin_country_name,
@@ -479,7 +456,7 @@ GROUP BY
 ORDER BY
     pct_internationalized DESC;
 
--- Domestic vs international
+-- Domestic vs international ratio (forward)
 SELECT
     d.origin_country,
     d.origin_country_name,
@@ -524,7 +501,7 @@ FROM
 ORDER BY
     domestic_to_international_ratio;
 
--- Mobility matrix (Use heat map)
+-- Mobility matrix 
 SELECT
     cf.origin_country,
     origin_c.country AS origin_country_name,
@@ -546,7 +523,7 @@ ORDER BY
     origin_country_name,
     pct_of_leiden_active DESC;
 
--- Regional grouping
+-- Regional grouping (Optional)
 IF OBJECT_ID('tempdb..#country_region', 'U') IS NOT NULL
     DROP TABLE #country_region;
 
@@ -586,8 +563,7 @@ ORDER BY
 
 -- Backwards looking study
 
--- reversed flow table (destination → origin)
-
+-- Reverse country-to-country flows (destination to origin)
 IF OBJECT_ID('tempdb..#backward_country_flows', 'U') IS NOT NULL
     DROP TABLE #backward_country_flows;
 
@@ -607,7 +583,7 @@ GROUP BY
     ly.country_code,
     fy.country_code;
 
--- Denominator: All Leiden-active researchers in 2020–2025 in each destination country
+-- Leiden-active researchers in 2020–2025 in each destination country
 IF OBJECT_ID('tempdb..#destination_leiden_active', 'U') IS NOT NULL
     DROP TABLE #destination_leiden_active;
 
@@ -644,7 +620,7 @@ ORDER BY
     pct_domestic_origins DESC;
 
 
--- Backward internationalization
+-- Backward internationalization share
 SELECT
     b.destination_country,
     c.country AS destination_country_name,
@@ -668,7 +644,7 @@ ORDER BY
     pct_international_origins DESC;
 
 
--- Domestic ↔ International ratio (backward)
+-- Domestic - International ratio (backward)
 SELECT
     d.destination_country,
     d.destination_country_name,
@@ -713,7 +689,7 @@ ORDER BY
     domestic_to_international_ratio;
 
 
--- Normalized backward mobility matrix
+-- Backward mobility matrix
 SELECT
     b.destination_country,
     dc.country AS destination_country_name,
@@ -734,3 +710,22 @@ FROM
 ORDER BY
     destination_country_name,
     pct_of_destination_active DESC;
+
+
+-- Regionalization (Optional)
+SELECT
+    dr.region AS destination_region,
+    orr.region AS origin_region,
+    SUM(b.n_researchers) AS n_researchers
+FROM
+    #backward_country_flows b
+    LEFT JOIN #country_region dr
+        ON b.destination_country = dr.country_code
+    LEFT JOIN #country_region orr
+        ON b.origin_country = orr.country_code
+GROUP BY
+    dr.region,
+    orr.region
+ORDER BY
+    dr.region, n_researchers DESC;
+
