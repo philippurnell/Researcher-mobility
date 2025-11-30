@@ -1,4 +1,11 @@
 
+-- Parameters (edit here if you change cohort/window)
+DECLARE @first_start_year INT = 2000;
+DECLARE @first_end_year   INT = 2010;
+DECLARE @last_start_year  INT = 2020;
+DECLARE @last_end_year    INT = 2025;
+
+
 -- First publication year
 IF OBJECT_ID('tempdb..#first_pub_year', 'U') IS NOT NULL 
     DROP TABLE #first_pub_year;
@@ -17,7 +24,7 @@ WHERE
 GROUP BY
     pa.researcher_id
 HAVING
-    MIN(p.pub_year) BETWEEN 2000 AND 2010;
+    MIN(p.pub_year) BETWEEN @first_start_year AND @first_end_year;
 -- 6355717
 
 CREATE INDEX ix_first_pub_year
@@ -72,41 +79,39 @@ CREATE INDEX ix_first_year_leiden
 
 
 -- First year university affiliation table
-IF OBJECT_ID('tempdb..#first_paper_university_counts_2000_2010', 'U') IS NOT NULL
-    DROP TABLE #first_paper_university_counts_2000_2010;
+IF OBJECT_ID('tempdb..#first_paper_university_counts', 'U') IS NOT NULL
+    DROP TABLE #first_paper_university_counts;
 
 SELECT
     fyl.ror_id,
     fyl.leiden_university_name AS university,
     COUNT(DISTINCT fyl.researcher_id) AS n_researchers_first_paper
-INTO #first_paper_university_counts_2000_2010
+INTO #first_paper_university_counts
 FROM
     #first_year_leiden fyl
 GROUP BY
     fyl.ror_id,
     fyl.leiden_university_name;
 
-
 SELECT
     ror_id,
     university,
     n_researchers_first_paper
 FROM
-    #first_paper_university_counts_2000_2010
+    #first_paper_university_counts
 ORDER BY
     n_researchers_first_paper DESC;
 
 
-
 -- First year country affiliation table
-IF OBJECT_ID('tempdb..#first_paper_country_counts_2000_2010', 'U') IS NOT NULL
-    DROP TABLE #first_paper_country_counts_2000_2010;
+IF OBJECT_ID('tempdb..#first_paper_country_counts', 'U') IS NOT NULL
+    DROP TABLE #first_paper_country_counts;
 
 SELECT
     c.country_code,
     c.country AS country_name,
     COUNT(DISTINCT fyl.researcher_id) AS n_researchers_first_paper
-INTO #first_paper_country_counts_2000_2010
+INTO #first_paper_country_counts
 FROM
     #first_year_leiden fyl
     LEFT JOIN dimensions_2025jul.dbo.country c
@@ -120,9 +125,10 @@ SELECT
     country_name,
     n_researchers_first_paper
 FROM
-    #first_paper_country_counts_2000_2010
+    #first_paper_country_counts
 ORDER BY
     n_researchers_first_paper DESC;
+
 
 
 -- Last (most recent) publication year
@@ -143,7 +149,7 @@ WHERE
         SELECT DISTINCT researcher_id
         FROM #first_year_leiden       -- same researchers as the first-paper cohort
     )
-    AND p.pub_year BETWEEN 2020 AND 2025
+    AND p.pub_year BETWEEN @last_start_year AND @last_end_year
 GROUP BY
     pa.researcher_id;
 -- 926917
@@ -227,7 +233,7 @@ FROM #last_paper_country_counts
 ORDER BY n_researchers_last_paper DESC;
 
 
--- Researcher status classification 2020-2025 - World
+-- Researcher status classification @last_start_year-@last_end_year - World
 IF OBJECT_ID('tempdb..#researcher_status', 'U') IS NOT NULL
     DROP TABLE #researcher_status;
 
@@ -237,7 +243,7 @@ SELECT
     CASE
         WHEN lyl.researcher_id IS NOT NULL THEN 'Still in Leiden'                    -- Category 1
         WHEN lpy.researcher_id IS NOT NULL THEN 'Active outside Leiden'              -- Category 2
-        ELSE 'No publications 2020-2025'                                             -- Category 3
+        ELSE 'No publications in analysis window'                                    -- Category 3
     END AS researcher_status,
 
     fy.country_code AS origin_country,
@@ -264,7 +270,7 @@ FROM
 GROUP BY
     researcher_status;
 
--- Researcher status classification 2020-2025 - By country
+-- Researcher status classification @last_start_year-@last_end_year - By country
 IF OBJECT_ID('tempdb..#origin_totals', 'U') IS NOT NULL
     DROP TABLE #origin_totals;
 
@@ -296,14 +302,14 @@ GROUP BY
     rs.researcher_status,
     t.total_researchers
 ORDER BY
-    origin_country,
+    origin_country_name,
     rs.researcher_status;
 
 -- Researchers with at least one foreign destination (forward, country level)
 IF OBJECT_ID('tempdb..#origin_international_researchers', 'U') IS NOT NULL
     DROP TABLE #origin_international_researchers;
 
-SELECT
+SELECT DISTINCT
     fy.country_code AS origin_country,
     fy.researcher_id
 INTO #origin_international_researchers
@@ -314,10 +320,8 @@ FROM
 WHERE
     fy.country_code IS NOT NULL
     AND ly.country_code IS NOT NULL
-    AND ly.country_code <> fy.country_code      -- foreign destination
-GROUP BY
-    fy.country_code,
-    fy.researcher_id;                           -- ensure each researcher counted once per origin
+    AND ly.country_code <> fy.country_code;
+
 
 IF OBJECT_ID('tempdb..#origin_international_counts', 'U') IS NOT NULL
     DROP TABLE #origin_international_counts;
@@ -352,17 +356,15 @@ WHERE
 IF OBJECT_ID('tempdb..#destination_international_researchers', 'U') IS NOT NULL
     DROP TABLE #destination_international_researchers;
 
-SELECT
+SELECT DISTINCT
     destination_country,
     researcher_id
 INTO #destination_international_researchers
 FROM
     #dest_origin_researchers
 WHERE
-    origin_country <> destination_country   -- foreign-origin
-GROUP BY
-    destination_country,
-    researcher_id;                          -- make sure each researcher counted once per destination
+    origin_country <> destination_country;
+
 
 -- aggregate to counts
 IF OBJECT_ID('tempdb..#destination_international_counts', 'U') IS NOT NULL
@@ -396,6 +398,9 @@ WHERE
 GROUP BY
     rs.origin_country;
 
+CREATE INDEX ix_origin_leiden_active
+    ON #origin_leiden_active (origin_country);
+
 -- Country-to-country flows (origin to destination)
 IF OBJECT_ID('tempdb..#country_flows_leiden', 'U') IS NOT NULL
     DROP TABLE #country_flows_leiden;
@@ -416,6 +421,8 @@ GROUP BY
     fy.country_code,
     ly.country_code;
 
+CREATE INDEX ix_country_flows_leiden
+    ON #country_flows_leiden (origin_country, destination_country);
 
 IF OBJECT_ID('tempdb..#ranked_destinations_leiden', 'U') IS NOT NULL
     DROP TABLE #ranked_destinations_leiden;
@@ -433,7 +440,7 @@ FROM
     #country_flows_leiden cf;
 
 
---  Top 20 destinations for each of the 12 origin countries as a share of Leiden-active origin-country researchers
+--  Top 20 destinations for each origin country with ‘Still in Leiden’ researchers
 SELECT
     r.origin_country,
     c1.country AS origin_country_name,
@@ -621,7 +628,10 @@ GROUP BY
     ly.country_code,
     fy.country_code;
 
--- Leiden-active researchers in 2020–2025 in each destination country
+CREATE INDEX ix_backward_country_flows
+    ON #backward_country_flows (destination_country, origin_country);
+
+-- Leiden-active researchers in last_start_year – last_end_year in each destination country
 IF OBJECT_ID('tempdb..#destination_leiden_active', 'U') IS NOT NULL
     DROP TABLE #destination_leiden_active;
 
@@ -633,6 +643,9 @@ FROM
     #last_year_leiden ly
 GROUP BY
     ly.country_code;
+
+CREATE INDEX ix_destination_leiden_active
+    ON #destination_leiden_active (destination_country);
 
 -- Backward domestic retention (staying in the same country)
 SELECT
