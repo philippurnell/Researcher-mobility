@@ -25,7 +25,7 @@ CREATE INDEX ix_first_pub_year
 
 
 -- Leiden Ranking Universities (Open Edition 2025)
-IF OBJECT_ID('tempdb..#LR_Open_Unis', 'LRU') IS NOT NULL 
+IF OBJECT_ID('tempdb..#LR_Open_Unis', 'U') IS NOT NULL 
     DROP TABLE #LR_Open_Unis;
 
 SELECT
@@ -279,7 +279,7 @@ GROUP BY
 	
 -- Result by Country
 SELECT
-    c.country AS origin_country,
+    c.country AS origin_country_name,
     rs.researcher_status,
     COUNT(*) AS n_researchers,
     t.total_researchers,
@@ -299,25 +299,87 @@ ORDER BY
     origin_country,
     rs.researcher_status;
 
-
--- Forward looking analysis
-
--- Count total researchers by origin country
-IF OBJECT_ID('tempdb..#origin_country_totals', 'U') IS NOT NULL 
-    DROP TABLE #origin_country_totals;
+-- Researchers with at least one foreign destination (forward, country level)
+IF OBJECT_ID('tempdb..#origin_international_researchers', 'U') IS NOT NULL
+    DROP TABLE #origin_international_researchers;
 
 SELECT
     fy.country_code AS origin_country,
-    COUNT(DISTINCT fy.researcher_id) AS n_origin_researchers
-INTO #origin_country_totals
+    fy.researcher_id
+INTO #origin_international_researchers
 FROM
     #first_year_leiden fy
+    JOIN #last_year_leiden ly
+        ON fy.researcher_id = ly.researcher_id
 WHERE
     fy.country_code IS NOT NULL
+    AND ly.country_code IS NOT NULL
+    AND ly.country_code <> fy.country_code      -- foreign destination
 GROUP BY
-    fy.country_code;
+    fy.country_code,
+    fy.researcher_id;                           -- ensure each researcher counted once per origin
 
--- OR
+IF OBJECT_ID('tempdb..#origin_international_counts', 'U') IS NOT NULL
+    DROP TABLE #origin_international_counts;
+
+SELECT
+    origin_country,
+    COUNT(DISTINCT researcher_id) AS n_international_researchers
+INTO #origin_international_counts
+FROM
+    #origin_international_researchers
+GROUP BY
+    origin_country;
+
+-- Researchers with destination & origin countries at individual level (backward)
+IF OBJECT_ID('tempdb..#dest_origin_researchers', 'U') IS NOT NULL
+    DROP TABLE #dest_origin_researchers;
+
+SELECT DISTINCT
+    ly.researcher_id,
+    ly.country_code AS destination_country,
+    fy.country_code AS origin_country
+INTO #dest_origin_researchers
+FROM
+    #last_year_leiden ly
+    JOIN #first_year_leiden fy
+        ON ly.researcher_id = fy.researcher_id
+WHERE
+    ly.country_code IS NOT NULL
+    AND fy.country_code IS NOT NULL;
+
+-- Researchers in each destination with at least one foreign origin
+IF OBJECT_ID('tempdb..#destination_international_researchers', 'U') IS NOT NULL
+    DROP TABLE #destination_international_researchers;
+
+SELECT
+    destination_country,
+    researcher_id
+INTO #destination_international_researchers
+FROM
+    #dest_origin_researchers
+WHERE
+    origin_country <> destination_country   -- foreign-origin
+GROUP BY
+    destination_country,
+    researcher_id;                          -- make sure each researcher counted once per destination
+
+-- aggregate to counts
+IF OBJECT_ID('tempdb..#destination_international_counts', 'U') IS NOT NULL
+    DROP TABLE #destination_international_counts;
+
+SELECT
+    destination_country,
+    COUNT(DISTINCT researcher_id) AS n_international_origin_researchers
+INTO #destination_international_counts
+FROM
+    #destination_international_researchers
+GROUP BY
+    destination_country;
+
+
+
+-- Forward looking analysis
 
 -- Count total Leiden active researchers by origin country
 IF OBJECT_ID('tempdb..#origin_leiden_active', 'U') IS NOT NULL
@@ -333,21 +395,6 @@ WHERE
     rs.researcher_status = 'Still in Leiden'
 GROUP BY
     rs.origin_country;
-
-
--- Identify the 12 largest origin countries by Leiden active researchers
-IF OBJECT_ID('tempdb..#top_origin_countries', 'U') IS NOT NULL 
-    DROP TABLE #top_origin_countries;
-
-SELECT TOP (12)
-    origin_country,
-    n_origin_leiden_active
-INTO #top_origin_countries
-FROM
-    #origin_leiden_active
-ORDER BY
-    n_origin_leiden_active DESC;
-
 
 -- Country-to-country flows (origin to destination)
 IF OBJECT_ID('tempdb..#country_flows_leiden', 'U') IS NOT NULL
@@ -370,7 +417,6 @@ GROUP BY
     ly.country_code;
 
 
---  Rank destinations within each top origin country
 IF OBJECT_ID('tempdb..#ranked_destinations_leiden', 'U') IS NOT NULL
     DROP TABLE #ranked_destinations_leiden;
 
@@ -378,13 +424,14 @@ SELECT
     cf.origin_country,
     cf.destination_country,
     cf.n_researchers,
-    ROW_NUMBER() OVER (
+    DENSE_RANK() OVER (
         PARTITION BY cf.origin_country
         ORDER BY cf.n_researchers DESC
     ) AS destination_rank
 INTO #ranked_destinations_leiden
 FROM
     #country_flows_leiden cf;
+
 
 --  Top 20 destinations for each of the 12 origin countries as a share of Leiden-active origin-country researchers
 SELECT
@@ -433,30 +480,25 @@ WHERE
 ORDER BY
     pct_domestic_retention DESC;
 
--- Internationalization share
+-- Internationalization share (distinct researchers with ≥1 foreign destination)
 SELECT
-    cf.origin_country,
+    oic.origin_country,
     c.country AS origin_country_name,
-    SUM(cf.n_researchers) AS n_international,
+    oic.n_international_researchers,
     o.n_origin_leiden_active,
-    CAST(100.0 * SUM(cf.n_researchers) / o.n_origin_leiden_active AS DECIMAL(6,2))
+    CAST(100.0 * oic.n_international_researchers / o.n_origin_leiden_active AS DECIMAL(6,2))
         AS pct_internationalized
 FROM
-    #country_flows_leiden cf
+    #origin_international_counts oic
     JOIN #origin_leiden_active o
-        ON cf.origin_country = o.origin_country
+        ON oic.origin_country = o.origin_country
     LEFT JOIN dimensions_2025jul.dbo.country c
-        ON cf.origin_country = c.country_code
-WHERE
-    cf.origin_country <> cf.destination_country
-GROUP BY
-    cf.origin_country,
-    c.country,
-    o.n_origin_leiden_active
+        ON oic.origin_country = c.country_code
 ORDER BY
     pct_internationalized DESC;
 
--- Domestic vs international ratio (forward)
+
+-- Domestic vs international ratio (forward, using distinct international researchers)
 SELECT
     d.origin_country,
     d.origin_country_name,
@@ -468,7 +510,7 @@ SELECT
     END AS domestic_to_international_ratio
 FROM
     (
-        -- Domestic retention
+        -- Domestic retention (% of Leiden-active researchers with at least one domestic destination)
         SELECT
             cf.origin_country,
             c.country AS origin_country_name,
@@ -483,23 +525,19 @@ FROM
     ) d
     JOIN
     (
-        -- Internationalization rate
+        -- Internationalization rate (distinct researchers with ≥1 foreign destination)
         SELECT
-            cf.origin_country,
-            CAST(100.0 * SUM(cf.n_researchers) / o.n_origin_leiden_active AS DECIMAL(6,2))
+            oic.origin_country,
+            CAST(100.0 * oic.n_international_researchers / o.n_origin_leiden_active AS DECIMAL(6,2))
                 AS pct_internationalized
         FROM
-            #country_flows_leiden cf
+            #origin_international_counts oic
             JOIN #origin_leiden_active o
-                ON cf.origin_country = o.origin_country
-        WHERE
-            cf.origin_country <> cf.destination_country
-        GROUP BY
-            cf.origin_country,
-            o.n_origin_leiden_active
+                ON oic.origin_country = o.origin_country
     ) i ON d.origin_country = i.origin_country
 ORDER BY
     domestic_to_international_ratio;
+
 
 -- Mobility matrix 
 SELECT
@@ -620,31 +658,25 @@ ORDER BY
     pct_domestic_origins DESC;
 
 
--- Backward internationalization share
+-- Backward internationalization share (distinct researchers with ≥1 foreign origin)
 SELECT
-    b.destination_country,
+    dic.destination_country,
     c.country AS destination_country_name,
-    SUM(b.n_researchers) AS n_international_origins,
+    dic.n_international_origin_researchers,
     d.n_destination_active,
-    CAST(100.0 * SUM(b.n_researchers) / d.n_destination_active AS DECIMAL(6,2))
+    CAST(100.0 * dic.n_international_origin_researchers / d.n_destination_active AS DECIMAL(6,2))
         AS pct_international_origins
 FROM
-    #backward_country_flows b
+    #destination_international_counts dic
     JOIN #destination_leiden_active d
-        ON b.destination_country = d.destination_country
+        ON dic.destination_country = d.destination_country
     LEFT JOIN dimensions_2025jul.dbo.country c
-        ON b.destination_country = c.country_code
-WHERE
-    b.destination_country <> b.origin_country
-GROUP BY
-    b.destination_country,
-    c.country,
-    d.n_destination_active
+        ON dic.destination_country = c.country_code
 ORDER BY
     pct_international_origins DESC;
 
 
--- Domestic - International ratio (backward)
+-- Domestic - International ratio (backward, using distinct international-origin researchers)
 SELECT
     d.destination_country,
     d.destination_country_name,
@@ -656,6 +688,7 @@ SELECT
     END AS domestic_to_international_ratio
 FROM
     (
+        -- Domestic origins: share of Leiden-active researchers whose origin country = destination country
         SELECT
             b.destination_country,
             c.country AS destination_country_name,
@@ -671,19 +704,15 @@ FROM
             b.destination_country = b.origin_country
     ) d
     JOIN (
+        -- International origins: share of Leiden-active researchers with ≥1 foreign origin
         SELECT
-            b.destination_country,
-            CAST(100.0 * SUM(b.n_researchers) / da.n_destination_active AS DECIMAL(6,2))
-                AS pct_international_origins
+            dic.destination_country,
+            CAST(100.0 * dic.n_international_origin_researchers / da.n_destination_active
+                AS DECIMAL(6,2)) AS pct_international_origins
         FROM
-            #backward_country_flows b
+            #destination_international_counts dic
             JOIN #destination_leiden_active da
-                ON b.destination_country = da.destination_country
-        WHERE
-            b.destination_country <> b.origin_country
-        GROUP BY
-            b.destination_country,
-            da.n_destination_active
+                ON dic.destination_country = da.destination_country
     ) i ON d.destination_country = i.destination_country
 ORDER BY
     domestic_to_international_ratio;
