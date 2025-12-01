@@ -1,9 +1,7 @@
 
--- Parameters (edit here if you change cohort/window)
+-- Parameters 
 DECLARE @first_start_year INT = 2000;
 DECLARE @first_end_year   INT = 2010;
-DECLARE @last_start_year  INT = 2020;
-DECLARE @last_end_year    INT = 2025;
 
 
 -- First publication year
@@ -130,6 +128,9 @@ ORDER BY
     n_researchers_first_paper DESC;
 
 
+-- Parameters
+DECLARE @last_start_year  INT = 2020;
+DECLARE @last_end_year    INT = 2025;
 
 -- Last (most recent) publication year
 IF OBJECT_ID('tempdb..#last_pub_year', 'U') IS NOT NULL 
