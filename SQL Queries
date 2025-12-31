@@ -214,7 +214,6 @@ CREATE INDEX ix_last_year_lr
     ON #last_year_LR (researcher_id, ror_id, country_code);
 
 
-
 -- ============================================
 -- SECTION 4: ORIGIN RECORDS & BASIC CLASSIFICATIONS
 -- ============================================
@@ -278,8 +277,8 @@ CREATE INDEX ix_researcher_status ON #researcher_status (origin_country, researc
 
 
 -- ============================================
--- SECTION 5: OUTPUT A — HOW MUCH DO WORKFORCES MOVE INTERNATIONALLY?
--- (Global status + country-level table with countries > 5000 researchers)
+-- SECTION 5: International workforce movement
+-- (Global and country-level status with countries > 5000 researchers)
 -- ============================================
 
 -- 5A.1 Global researcher status summary
@@ -294,7 +293,7 @@ ORDER BY n_researchers DESC;
 
 
 
--- Build a table of researcher ↔ origin_country based on ANY first-window LR affiliation
+-- Build a table of researcher ↔ origin_country based on any first-window LR affiliation
 IF OBJECT_ID('tempdb..#origin_researchers_any', 'U') IS NOT NULL
     DROP TABLE #origin_researchers_any;
 
@@ -377,7 +376,7 @@ CREATE INDEX ix_rs_by_country_v2 ON #researcher_status_by_country_v2 (country_co
 
 
 
--- Output only countries with > 5000 researchers (same presentation filter as before)
+-- Output only countries with > 5000 researchers 
 SELECT *
 FROM #researcher_status_by_country_v2
 WHERE total_researchers_at_origin > 5000
@@ -429,9 +428,8 @@ GROUP BY
 CREATE INDEX ix_backward_country_flows
     ON #backward_country_flows (destination_country, origin_country);
 
--- ============================================
+
 -- Build #country_flows_lr: origin -> destination counts (LR observed in destination window)
--- ============================================
 IF OBJECT_ID('tempdb..#country_flows_lr', 'U') IS NOT NULL
     DROP TABLE #country_flows_lr;
 
@@ -454,7 +452,7 @@ GROUP BY
 CREATE INDEX ix_country_flows_lr ON #country_flows_lr (origin_country, destination_country, n_researchers);
 
 
--- 6.3 Mobility matrix (destination perspective) - kept as temp for later use
+-- 6.3 Mobility matrix (destination perspective)
 IF OBJECT_ID('tempdb..#backward_mobility_matrix', 'U') IS NOT NULL
     DROP TABLE #backward_mobility_matrix;
 
@@ -550,9 +548,7 @@ CREATE INDEX ix_backward_mobility
     ON #backward_mobility (dest_country, dest_ror_id, status, researcher_id);
 
 
--- ============================================
--- BACKWARD: University-level table for destination perspective (with ROR)
--- ============================================
+-- BACKWARD: University-level table for destination perspective with ROR
 IF OBJECT_ID('tempdb..#backward_university_table', 'U') IS NOT NULL
     DROP TABLE #backward_university_table;
 
@@ -584,7 +580,6 @@ GROUP BY
 
 CREATE INDEX ix_backward_university_table ON #backward_university_table (iso_a3_country_code, n_researchers);
 
--- Output 
 SELECT
     university_ror_id,
     university_name,
@@ -600,10 +595,10 @@ ORDER BY n_researchers DESC;
 
 
 -- ============================================
--- SECTION 7: OUTPUT B — DOMINANT INTERNATIONAL MOBILITY FLOWS
+-- SECTION 7: International mobility flows
 -- ============================================
 
--- Define the 12 selected countries (ISO A3). Change entries here as needed.
+-- Define the 12 selected countries (ISO A3)
 IF OBJECT_ID('tempdb..#selected_countries', 'U') IS NOT NULL
     DROP TABLE #selected_countries;
 
@@ -716,11 +711,6 @@ WHERE orr.rn <= 6
 ORDER BY orr.focal_country, orr.rn;
 
 
--- ============================================
--- SECTION 7.4: FORWARD-LOOKING ANALYSIS 
--- (Origin --> Destination; outbound flows)
--- ============================================
-
 -- 7.4 Researcher-level forward mobility classification (forward_mobility)
 IF OBJECT_ID('tempdb..#forward_mobility', 'U') IS NOT NULL
     DROP TABLE #forward_mobility;
@@ -814,7 +804,7 @@ CREATE INDEX ix_forward_mobility
     ON #forward_mobility (origin_country, origin_ror_id, status, researcher_id);
 
 
--- FORWARD: University-level table for origin (forward-looking) perspective (with ROR)
+-- FORWARD: University-level table for origin (forward-looking) perspective with ROR
 
 IF OBJECT_ID('tempdb..#forward_university_table', 'U') IS NOT NULL
     DROP TABLE #forward_university_table;
@@ -956,4 +946,6 @@ FROM status_rows sr
 ORDER BY origin_country_name, display_order, destination_country_name;
 
 -- End of script
+
+
 
