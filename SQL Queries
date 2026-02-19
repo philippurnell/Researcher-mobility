@@ -16,19 +16,18 @@ IF OBJECT_ID('tempdb..#country_mapping', 'U') IS NOT NULL
 
 SELECT DISTINCT
     d.country_code AS iso_a2,
-    d.country AS country_name,
+    d.country      AS country_name,
     w.country_iso_alpha3_code AS iso_a3
 INTO #country_mapping
 FROM dimensions_2025jul.dbo.country d
 LEFT JOIN wos_2539.dbo.country w
     ON d.country_code = w.country_iso_alpha2_code;
 
-CREATE INDEX ix_country_mapping ON #country_mapping (iso_a2);
+CREATE INDEX ix_country_mapping    ON #country_mapping (iso_a2);
 CREATE INDEX ix_country_mapping_a3 ON #country_mapping (iso_a3);
 
 
--- 1.3 Region definitions (mapping ISO_A3 -> region)
-
+-- 1.3 Region definitions (ISO_A3 -> region)
 IF OBJECT_ID('tempdb..#region_map', 'U') IS NOT NULL
     DROP TABLE #region_map;
 
@@ -37,9 +36,7 @@ CREATE TABLE #region_map (
     region_name  VARCHAR(80)  NOT NULL
 );
 
-
-INSERT INTO #region_map (country_name, region_name)
-VALUES
+INSERT INTO #region_map (country_name, region_name) VALUES
 ('Australia','Oceania'),
 ('United Kingdom','Western and Northern Europe'),
 ('Spain','Southern Europe'),
@@ -105,24 +102,21 @@ VALUES
 ('Slovenia','Central and Eastern Europe'),
 ('Ghana','Africa');
 
-SELECT
-    country_name,
-    region_name
+SELECT country_name, region_name
 FROM #region_map
 ORDER BY region_name, country_name;
 
-CREATE INDEX ix_machacek_region_map_country ON #region_map (country_name);
+CREATE INDEX ix_region_map_country ON #region_map (country_name);
 
 
--- 1.4 Leiden Ranking Universities (Open Edition 2025)
-
+-- 1.4 Leiden Ranking universities (Open Edition 2025)
 IF OBJECT_ID('tempdb..#LR_Open_Unis', 'U') IS NOT NULL DROP TABLE #LR_Open_Unis;
-IF OBJECT_ID('tempdb..#lr_unis', 'U') IS NOT NULL DROP TABLE #lr_unis;
+IF OBJECT_ID('tempdb..#lr_unis',      'U') IS NOT NULL DROP TABLE #lr_unis;
 
 SELECT
-    university_ror_id    AS ror_id,
-    university           AS university,
-    country_code         AS country_code,
+    university_ror_id AS ror_id,
+    university        AS university,
+    country_code      AS country_code,
     latitude,
     longitude
 INTO #LR_Open_Unis
@@ -130,11 +124,11 @@ FROM leiden_ranking_open_edition_2025.dbo.university;
 
 CREATE INDEX ix_lr_open_unis ON #LR_Open_Unis (ror_id);
 
--- 1.5 Normalized lookup
+-- 1.5 Normalised lookup
 SELECT
     ror_id,
-    university        AS lr_university_name,
-    country_code      AS lr_country_code,
+    university   AS lr_university_name,
+    country_code AS lr_country_code,
     latitude,
     longitude
 INTO #lr_unis
@@ -144,100 +138,119 @@ CREATE INDEX ix_lr_unis ON #lr_unis (ror_id);
 
 
 -- ============================================
--- SECTION 2: FIRST PUBLICATION YEAR (2000-2010)
+-- SECTION 2: ORIGIN WINDOW
+-- Identify researchers and their first LR affiliation (first_start_year – first_end_year)
 -- ============================================
 
--- First publication year by researcher
-IF OBJECT_ID('tempdb..#first_pub_year', 'U') IS NOT NULL 
+-- 2.1 First publication year by researcher
+IF OBJECT_ID('tempdb..#first_pub_year', 'U') IS NOT NULL
     DROP TABLE #first_pub_year;
 
 SELECT
     pa.researcher_id,
     MIN(p.pub_year) AS first_pub_year
 INTO #first_pub_year
-FROM
-    dimensions_2025jul.dbo.pub_author pa
-    JOIN dimensions_2025jul.dbo.pub p
-        ON pa.pub_id = p.pub_id
-WHERE
-    pa.researcher_id IS NOT NULL
-    AND p.pub_year IS NOT NULL
-GROUP BY
-    pa.researcher_id
-HAVING
-    MIN(p.pub_year) BETWEEN @first_start_year AND @first_end_year;
+FROM dimensions_2025jul.dbo.pub_author pa
+JOIN dimensions_2025jul.dbo.pub p
+    ON pa.pub_id = p.pub_id
+WHERE pa.researcher_id IS NOT NULL
+  AND p.pub_year IS NOT NULL
+GROUP BY pa.researcher_id
+HAVING MIN(p.pub_year) BETWEEN @first_start_year AND @first_end_year;
+
+CREATE INDEX ix_first_pub_year ON #first_pub_year (researcher_id, first_pub_year);
 
 
-CREATE INDEX ix_first_pub_year
-    ON #first_pub_year (researcher_id, first_pub_year);
-
-
--- First year at Leiden Ranking universities (origin window)
-IF OBJECT_ID('tempdb..#first_year_LR', 'U') IS NOT NULL 
+-- 2.2 First-window LR affiliations
+IF OBJECT_ID('tempdb..#first_year_LR', 'U') IS NOT NULL
     DROP TABLE #first_year_LR;
 
 SELECT DISTINCT
     fp.researcher_id,
     fp.first_pub_year,
     o.ror_id,
-    lr.lr_university_name           AS lr_university_name,
-    o.organization_name             AS org_name_in_dimensions,
-    cm.iso_a3                       AS country_code
+    lr.lr_university_name        AS lr_university_name,
+    o.organization_name          AS org_name_in_dimensions,
+    cm.iso_a3                    AS country_code
 INTO #first_year_LR
-FROM
-    #first_pub_year fp
-    JOIN dimensions_2025jul.dbo.pub_author pa
-        ON fp.researcher_id = pa.researcher_id
-    JOIN dimensions_2025jul.dbo.pub p
-        ON pa.pub_id = p.pub_id
-       AND p.pub_year = fp.first_pub_year
-    JOIN dimensions_2025jul.dbo.pub_author_affiliation paa
-        ON pa.pub_id = paa.pub_id
-       AND pa.author_seq = paa.author_seq
-    JOIN dimensions_2025jul.dbo.pub_affiliation_organization pao
-        ON paa.pub_id = pao.pub_id
-       AND paa.affiliation_seq = pao.affiliation_seq
-    JOIN dimensions_2025jul.dbo.organization o
-        ON pao.grid_id = o.grid_id
-    JOIN #lr_unis lr
-        ON o.ror_id = lr.ror_id
-    LEFT JOIN #country_mapping cm
-        ON o.country_code = cm.iso_a2;
+FROM #first_pub_year fp
+JOIN dimensions_2025jul.dbo.pub_author pa
+    ON fp.researcher_id = pa.researcher_id
+JOIN dimensions_2025jul.dbo.pub p
+    ON pa.pub_id = p.pub_id
+   AND p.pub_year = fp.first_pub_year
+JOIN dimensions_2025jul.dbo.pub_author_affiliation paa
+    ON pa.pub_id = paa.pub_id
+   AND pa.author_seq = paa.author_seq
+JOIN dimensions_2025jul.dbo.pub_affiliation_organization pao
+    ON paa.pub_id = pao.pub_id
+   AND paa.affiliation_seq = pao.affiliation_seq
+JOIN dimensions_2025jul.dbo.organization o
+    ON pao.grid_id = o.grid_id
+JOIN #lr_unis lr
+    ON o.ror_id = lr.ror_id
+LEFT JOIN #country_mapping cm
+    ON o.country_code = cm.iso_a2;
 
-CREATE INDEX ix_first_year_lr
-    ON #first_year_LR (ror_id, country_code, researcher_id);
+CREATE INDEX ix_first_year_lr ON #first_year_LR (ror_id, country_code, researcher_id);
+
+
+-- 2.3 Single canonical origin record per researcher
+--     (earliest year, then ror_id, then country as tiebreakers)
+IF OBJECT_ID('tempdb..#origin_one', 'U') IS NOT NULL
+    DROP TABLE #origin_one;
+
+WITH origin_candidates AS (
+    SELECT
+        researcher_id,
+        first_pub_year,
+        country_code,
+        ror_id,
+        ROW_NUMBER() OVER (
+            PARTITION BY researcher_id
+            ORDER BY first_pub_year ASC, ror_id ASC, country_code ASC
+        ) AS rn
+    FROM #first_year_LR
+    WHERE researcher_id IS NOT NULL
+)
+SELECT
+    researcher_id,
+    first_pub_year,
+    country_code AS origin_country,
+    ror_id       AS origin_ror_id
+INTO #origin_one
+FROM origin_candidates
+WHERE rn = 1;
+
+CREATE INDEX ix_origin_one ON #origin_one (researcher_id, origin_country);
 
 
 -- ============================================
--- SECTION 3: LAST PUBLICATION YEAR (2020-2025)
+-- SECTION 3: DESTINATION WINDOW
+-- Track researchers into the later period (last_start_year – last_end_year)
 -- ============================================
 
--- Last publication year by researcher (only for researchers observed in first window)
-IF OBJECT_ID('tempdb..#last_pub_year', 'U') IS NOT NULL 
+-- 3.1 Last publication year by researcher (origin-window cohort only)
+IF OBJECT_ID('tempdb..#last_pub_year', 'U') IS NOT NULL
     DROP TABLE #last_pub_year;
 
 SELECT
     pa.researcher_id,
     MAX(p.pub_year) AS last_pub_year
 INTO #last_pub_year
-FROM
-    dimensions_2025jul.dbo.pub_author pa
-    JOIN dimensions_2025jul.dbo.pub p
-        ON pa.pub_id = p.pub_id
-WHERE
-    pa.researcher_id IN (
-        SELECT DISTINCT researcher_id
-        FROM #first_year_LR
+FROM dimensions_2025jul.dbo.pub_author pa
+JOIN dimensions_2025jul.dbo.pub p
+    ON pa.pub_id = p.pub_id
+WHERE pa.researcher_id IN (
+        SELECT DISTINCT researcher_id FROM #first_year_LR
     )
-    AND p.pub_year BETWEEN @last_start_year AND @last_end_year
-GROUP BY
-    pa.researcher_id;
+  AND p.pub_year BETWEEN @last_start_year AND @last_end_year
+GROUP BY pa.researcher_id;
 
-CREATE INDEX ix_last_pub_year
-    ON #last_pub_year (researcher_id, last_pub_year);
+CREATE INDEX ix_last_pub_year ON #last_pub_year (researcher_id, last_pub_year);
 
 
--- Destination-window LR observations across all years (for returnee detection)
+-- 3.2 All destination-window LR observations (used for returnee detection)
 IF OBJECT_ID('tempdb..#dest_window_LR_all_years', 'U') IS NOT NULL
     DROP TABLE #dest_window_LR_all_years;
 
@@ -259,84 +272,53 @@ JOIN dimensions_2025jul.dbo.organization o
     ON pao.grid_id = o.grid_id
 JOIN #LR_Open_Unis lr
     ON o.ror_id = lr.ror_id
-WHERE
-    p.pub_year BETWEEN @last_start_year AND @last_end_year
-    AND pa.researcher_id IN (SELECT DISTINCT researcher_id FROM #last_pub_year);
+WHERE p.pub_year BETWEEN @last_start_year AND @last_end_year
+  AND pa.researcher_id IN (SELECT DISTINCT researcher_id FROM #last_pub_year);
 
 CREATE INDEX ix_dest_window_LR_all_years
     ON #dest_window_LR_all_years (researcher_id, pub_year, ror_id);
 
 
--- Last year at Leiden Ranking universities (destination window)
-IF OBJECT_ID('tempdb..#last_year_LR', 'U') IS NOT NULL 
+-- 3.3 Last-year LR affiliations (destination window)
+IF OBJECT_ID('tempdb..#last_year_LR', 'U') IS NOT NULL
     DROP TABLE #last_year_LR;
 
 SELECT DISTINCT
     lp.researcher_id,
-    lp.last_pub_year AS pub_year,
+    lp.last_pub_year             AS pub_year,
     o.ror_id,
-    lr.lr_university_name           AS lr_university_name,
-    o.organization_name             AS org_name_in_dimensions,
-    cm.iso_a3                       AS country_code
+    lr.lr_university_name        AS lr_university_name,
+    o.organization_name          AS org_name_in_dimensions,
+    cm.iso_a3                    AS country_code
 INTO #last_year_LR
-FROM
-    #last_pub_year lp
-    JOIN dimensions_2025jul.dbo.pub_author pa
-        ON lp.researcher_id = pa.researcher_id
-    JOIN dimensions_2025jul.dbo.pub p
-        ON pa.pub_id = p.pub_id
-       AND p.pub_year = lp.last_pub_year
-    JOIN dimensions_2025jul.dbo.pub_author_affiliation paa
-        ON pa.pub_id = paa.pub_id
-       AND pa.author_seq = paa.author_seq
-    JOIN dimensions_2025jul.dbo.pub_affiliation_organization pao
-        ON paa.pub_id = pao.pub_id
-       AND paa.affiliation_seq = pao.affiliation_seq
-    JOIN dimensions_2025jul.dbo.organization o
-        ON pao.grid_id = o.grid_id
-    JOIN #lr_unis lr
-        ON o.ror_id = lr.ror_id
-    LEFT JOIN #country_mapping cm
-        ON o.country_code = cm.iso_a2;
+FROM #last_pub_year lp
+JOIN dimensions_2025jul.dbo.pub_author pa
+    ON lp.researcher_id = pa.researcher_id
+JOIN dimensions_2025jul.dbo.pub p
+    ON pa.pub_id = p.pub_id
+   AND p.pub_year = lp.last_pub_year
+JOIN dimensions_2025jul.dbo.pub_author_affiliation paa
+    ON pa.pub_id = paa.pub_id
+   AND pa.author_seq = paa.author_seq
+JOIN dimensions_2025jul.dbo.pub_affiliation_organization pao
+    ON paa.pub_id = pao.pub_id
+   AND paa.affiliation_seq = pao.affiliation_seq
+JOIN dimensions_2025jul.dbo.organization o
+    ON pao.grid_id = o.grid_id
+JOIN #lr_unis lr
+    ON o.ror_id = lr.ror_id
+LEFT JOIN #country_mapping cm
+    ON o.country_code = cm.iso_a2;
 
-CREATE INDEX ix_last_year_lr
-    ON #last_year_LR (researcher_id, ror_id, country_code);
+CREATE INDEX ix_last_year_lr ON #last_year_LR (researcher_id, ror_id, country_code);
 
 
 -- ============================================
--- SECTION 4: ORIGIN RECORDS & BASIC CLASSIFICATIONS
+-- SECTION 4: RESEARCHER STATUS CLASSIFICATION
+-- Classify every origin-window researcher by destination-window outcome
 -- ============================================
 
--- Build a single origin record per researcher (earliest observed origin in start window)
-IF OBJECT_ID('tempdb..#origin_one', 'U') IS NOT NULL
-    DROP TABLE #origin_one;
-
-WITH origin_candidates AS (
-    SELECT
-        researcher_id,
-        first_pub_year,
-        country_code,
-        ror_id,
-        ROW_NUMBER() OVER (
-            PARTITION BY researcher_id
-            ORDER BY first_pub_year ASC, ror_id ASC, country_code ASC
-        ) AS rn
-    FROM #first_year_LR
-    WHERE researcher_id IS NOT NULL
-)
-SELECT
-    researcher_id,
-    first_pub_year,
-    country_code AS origin_country,
-    ror_id      AS origin_ror_id
-INTO #origin_one
-FROM origin_candidates
-WHERE rn = 1;
-
-CREATE INDEX ix_origin_one ON #origin_one (researcher_id, origin_country);
-
-
--- Researcher status (world)  (1 row per researcher)
+-- 4.1 Researcher status (global)
 IF OBJECT_ID('tempdb..#researcher_status', 'U') IS NOT NULL
     DROP TABLE #researcher_status;
 
@@ -345,44 +327,19 @@ SELECT
     CASE
         WHEN ly.researcher_id IS NOT NULL THEN 'Observed at LR in destination window'
         WHEN lp.researcher_id IS NOT NULL THEN 'Active outside Leiden Ranking'
-        ELSE 'No publications in analysis window'
+        ELSE                                   'No publications in analysis window'
     END AS researcher_status,
     o.origin_country,
     o.first_pub_year
 INTO #researcher_status
 FROM #origin_one o
-LEFT JOIN (
-    SELECT DISTINCT researcher_id
-    FROM #last_year_LR
-) ly
-    ON o.researcher_id = ly.researcher_id
-LEFT JOIN (
-    SELECT DISTINCT researcher_id
-    FROM #last_pub_year
-) lp
-    ON o.researcher_id = lp.researcher_id;
+LEFT JOIN (SELECT DISTINCT researcher_id FROM #last_year_LR)  ly ON o.researcher_id = ly.researcher_id
+LEFT JOIN (SELECT DISTINCT researcher_id FROM #last_pub_year) lp ON o.researcher_id = lp.researcher_id;
 
 CREATE INDEX ix_researcher_status ON #researcher_status (origin_country, researcher_status);
 
 
--- ============================================
--- SECTION 5: International workforce movement
--- (Global and country-level status with countries > 5000 researchers)
--- ============================================
-
--- 5.1 Global researcher status summary (OUTPUT 1)
-SELECT
-    researcher_status,
-    COUNT(*) AS n_researchers,
-    CAST(100.0 * COUNT(*) / SUM(COUNT(*)) OVER () AS DECIMAL(6,2)) AS pct_of_total
-FROM #researcher_status
-GROUP BY researcher_status
-ORDER BY n_researchers DESC;
-
-
-
-
--- 5.2 Build a table of researcher ↔ origin_country based on any first-window LR affiliation
+-- 4.2 Origin totals (any first-window LR affiliation — used as denominators throughout)
 IF OBJECT_ID('tempdb..#origin_researchers_any', 'U') IS NOT NULL
     DROP TABLE #origin_researchers_any;
 
@@ -394,8 +351,6 @@ FROM #first_year_LR fy;
 
 CREATE INDEX ix_origin_researchers_any ON #origin_researchers_any (origin_country, researcher_id);
 
-
--- Ensure #origin_totals exists (any-affiliation counts)
 IF OBJECT_ID('tempdb..#origin_totals', 'U') IS NOT NULL
     DROP TABLE #origin_totals;
 
@@ -409,868 +364,24 @@ GROUP BY origin_country;
 CREATE INDEX ix_origin_totals ON #origin_totals (origin_country);
 
 
--- Build country-level outcome table using the any-affiliation researcher set joined to researcher_status by researcher_id
-IF OBJECT_ID('tempdb..#researcher_status_by_country_v2', 'U') IS NOT NULL
-    DROP TABLE #researcher_status_by_country_v2;
+-- 4.3 Inactive researcher sub-classification
+--     (last observed location for those absent from the destination window)
 
-SELECT
-    ot.origin_country                                         AS country_code,
-    cm.country_name                                           AS origin_country_name,
-
-    ot.n_origin_total                                         AS total_researchers_at_origin,
-
-    -- counts of researchers (from the any-affiliation set) by outcome
-    SUM(CASE WHEN rs.researcher_status = 'Observed at LR in destination window' THEN 1 ELSE 0 END)
-        AS n_observed_at_lr_destination_window,
-
-    SUM(CASE WHEN rs.researcher_status = 'Active outside Leiden Ranking' THEN 1 ELSE 0 END)
-        AS n_active_outside_leiden_ranking,
-
-    SUM(CASE WHEN rs.researcher_status = 'No publications in analysis window' THEN 1 ELSE 0 END)
-        AS n_no_publications_in_analysis_window,
-
-    -- percentages relative to the any-affiliation denominator
-    CAST(
-        100.0 * SUM(CASE WHEN rs.researcher_status = 'Observed at LR in destination window' THEN 1 ELSE 0 END)
-        / NULLIF(ot.n_origin_total, 0)
-        AS DECIMAL(6,2)
-    ) AS pct_observed_at_lr_destination_window,
-
-    CAST(
-        100.0 * SUM(CASE WHEN rs.researcher_status = 'Active outside Leiden Ranking' THEN 1 ELSE 0 END)
-        / NULLIF(ot.n_origin_total, 0)
-        AS DECIMAL(6,2)
-    ) AS pct_active_outside_leiden_ranking,
-
-    CAST(
-        100.0 * SUM(CASE WHEN rs.researcher_status = 'No publications in analysis window' THEN 1 ELSE 0 END)
-        / NULLIF(ot.n_origin_total, 0)
-        AS DECIMAL(6,2)
-    ) AS pct_no_publications_in_analysis_window
-
-INTO #researcher_status_by_country_v2
-FROM #origin_totals ot
-LEFT JOIN #country_mapping cm
-    ON ot.origin_country = cm.iso_a3
-LEFT JOIN #origin_researchers_any orec
-    ON orec.origin_country = ot.origin_country
-LEFT JOIN #researcher_status rs
-    ON rs.researcher_id = orec.researcher_id
-GROUP BY
-    ot.origin_country,
-    cm.country_name,
-    ot.n_origin_total;
-
-CREATE INDEX ix_rs_by_country_v2 ON #researcher_status_by_country_v2 (country_code, total_researchers_at_origin);
-
-
-
--- 5.3 Output only countries with > 5000 researchers (OUTPUT 2)
-SELECT *
-FROM #researcher_status_by_country_v2
-WHERE total_researchers_at_origin > 5000
-ORDER BY total_researchers_at_origin DESC;
-
-
--- ============================================
--- SECTION 6: BACKWARD-LOOKING ANALYSIS 
--- (Destination <-- Origin; inbound flows)
--- ============================================
-
--- 6.1 Destination-window LR active researchers in each destination country
-IF OBJECT_ID('tempdb..#destination_lr_active', 'U') IS NOT NULL
-    DROP TABLE #destination_lr_active;
-
-SELECT
-    ly.country_code AS destination_country,
-    COUNT(DISTINCT ly.researcher_id) AS n_destination_active
-INTO #destination_lr_active
-FROM
-    #last_year_LR ly
-GROUP BY
-    ly.country_code;
-
-CREATE INDEX ix_destination_lr_active
-    ON #destination_lr_active (destination_country);
-
-
--- 6.2 Reverse country-to-country flows (destination to origin)
-IF OBJECT_ID('tempdb..#backward_country_flows', 'U') IS NOT NULL
-    DROP TABLE #backward_country_flows;
-
-SELECT
-    ly.country_code AS destination_country,
-    fy.country_code AS origin_country,
-    COUNT(DISTINCT fy.researcher_id) AS n_researchers
-INTO #backward_country_flows
-FROM
-    #last_year_LR ly
-    INNER JOIN #first_year_LR fy
-        ON ly.researcher_id = fy.researcher_id
-WHERE
-    ly.country_code IS NOT NULL
-    AND fy.country_code IS NOT NULL
-GROUP BY
-    ly.country_code,
-    fy.country_code;
-
-CREATE INDEX ix_backward_country_flows
-    ON #backward_country_flows (destination_country, origin_country);
-
-
--- Build #country_flows_lr: origin -> destination counts (LR observed in destination window)
-IF OBJECT_ID('tempdb..#country_flows_lr', 'U') IS NOT NULL
-    DROP TABLE #country_flows_lr;
-
-SELECT
-    fy.country_code  AS origin_country,
-    ly.country_code  AS destination_country,
-    COUNT(DISTINCT fy.researcher_id) AS n_researchers
-INTO #country_flows_lr
-FROM
-    #first_year_LR fy
-    INNER JOIN #last_year_LR ly
-        ON fy.researcher_id = ly.researcher_id
-WHERE
-    fy.country_code IS NOT NULL
-    AND ly.country_code IS NOT NULL
-GROUP BY
-    fy.country_code,
-    ly.country_code;
-
-CREATE INDEX ix_country_flows_lr ON #country_flows_lr (origin_country, destination_country, n_researchers);
-
-
--- 6.3 Mobility matrix (destination perspective)
-IF OBJECT_ID('tempdb..#backward_mobility_matrix', 'U') IS NOT NULL
-    DROP TABLE #backward_mobility_matrix;
-
-SELECT
-    b.destination_country,
-    dc.country_name AS destination_country_name,
-    b.origin_country,
-    oc.country_name AS origin_country_name,
-    b.n_researchers,
-    d.n_destination_active,
-    CAST(100.0 * b.n_researchers / NULLIF(d.n_destination_active, 0) AS DECIMAL(6,2))
-        AS pct_of_destination_active
-INTO #backward_mobility_matrix
-FROM
-    #backward_country_flows b
-    JOIN #destination_lr_active d
-        ON b.destination_country = d.destination_country
-    LEFT JOIN #country_mapping dc
-        ON b.destination_country = dc.iso_a3
-    LEFT JOIN #country_mapping oc
-        ON b.origin_country = oc.iso_a3;
-
-
--- 6.4 Researcher-level classification (backward) and returnee detection
-IF OBJECT_ID('tempdb..#backward_mobility', 'U') IS NOT NULL
-    DROP TABLE #backward_mobility;
-
-WITH dest_base AS (
-    SELECT DISTINCT
-        ly.researcher_id,
-        ly.ror_id AS dest_ror_id,
-        ly.lr_university_name AS dest_university,
-        ly.country_code AS dest_country
-    FROM #last_year_LR ly
-)
-SELECT
-    d.researcher_id,
-    d.dest_ror_id,
-    d.dest_university,
-    d.dest_country,
-    CASE
-        WHEN EXISTS (
-            SELECT 1
-            FROM #first_year_LR fy
-            WHERE fy.researcher_id = d.researcher_id
-              AND fy.ror_id = d.dest_ror_id
-        ) THEN 'Insider'
-
-        WHEN EXISTS (
-            SELECT 1
-            FROM #first_year_LR fy
-            WHERE fy.researcher_id = d.researcher_id
-              AND fy.country_code = d.dest_country
-        )
-        AND NOT EXISTS (
-            SELECT 1
-            FROM #first_year_LR fy
-            WHERE fy.researcher_id = d.researcher_id
-              AND fy.ror_id = d.dest_ror_id
-        ) THEN 'Domestic outsider'
-
-        ELSE 'Foreign outsider'
-    END AS status,
-
-CASE
-    WHEN EXISTS (
-        SELECT 1
-        FROM #first_year_LR fy
-        WHERE fy.researcher_id = d.researcher_id
-          AND fy.country_code = d.dest_country  -- Same country as destination
-    )
-    AND EXISTS (
-        -- Published in a different country during destination window
-        SELECT 1
-        FROM #dest_window_LR_all_years dw
-        JOIN #lr_unis lr ON dw.ror_id = lr.ror_id
-        JOIN #country_mapping cm ON lr.lr_country_code = cm.iso_a2
-        WHERE dw.researcher_id = d.researcher_id
-          AND cm.iso_a3 <> d.dest_country  -- Different country than destination
-    )
-    THEN 1 ELSE 0
-END AS is_returnee
-
-INTO #backward_mobility
-FROM dest_base d;
-
-CREATE INDEX ix_backward_mobility
-    ON #backward_mobility (dest_country, dest_ror_id, status, researcher_id);
-
-
--- 6.5 BACKWARD: University-level table for destination perspective with ROR
-IF OBJECT_ID('tempdb..#backward_university_table', 'U') IS NOT NULL
-    DROP TABLE #backward_university_table;
-
-SELECT
-    bm.dest_ror_id                                               AS university_ror_id,
-    COALESCE(r.lr_university_name, bm.dest_university)           AS university_name,
-    cm.iso_a3                                                    AS iso_a3_country_code,
-	CAST(r.latitude AS float)									 AS latitude,
-	CAST(r.longitude AS float)									 AS longitude,
-
-    COUNT(DISTINCT bm.researcher_id)                             AS n_researchers,
-    SUM(CASE WHEN bm.status = 'Insider' THEN 1 ELSE 0 END)       AS n_insiders,
-    CAST(
-        100.0 * SUM(CASE WHEN bm.status = 'Insider' THEN 1 ELSE 0 END)
-        / NULLIF(COUNT(DISTINCT bm.researcher_id), 0)
-        AS DECIMAL(6,2)
-    ) AS pct_insiders
-INTO #backward_university_table
-FROM #backward_mobility bm
-LEFT JOIN #lr_unis r
-    ON bm.dest_ror_id = r.ror_id
-LEFT JOIN #country_mapping cm
-    ON r.lr_country_code = cm.iso_a2
-GROUP BY
-    bm.dest_ror_id,
-    COALESCE(r.lr_university_name, bm.dest_university),
-    cm.iso_a3,
-    r.latitude,
-    r.longitude;
-
-CREATE INDEX ix_backward_university_table ON #backward_university_table (iso_a3_country_code, n_researchers);
-
--- ============================================
--- 6.6 Box-plot data (by region and country) for pct_insiders
--- ============================================
-
-IF OBJECT_ID('tempdb..#boxplot_region_annotated', 'U') IS NOT NULL DROP TABLE #boxplot_region_annotated;
-IF OBJECT_ID('tempdb..#boxplot_points_region',   'U') IS NOT NULL DROP TABLE #boxplot_points_region;
-IF OBJECT_ID('tempdb..#boxplot_stats_region',    'U') IS NOT NULL DROP TABLE #boxplot_stats_region;
-
-;WITH base AS (
-	SELECT
-		u.university_ror_id,
-		u.university_name,
-		u.iso_a3_country_code,
-		cm.country_name,
-		rm.region_name,
-		CAST(u.pct_insiders AS float) AS value_pct_insiders
-	FROM #backward_university_table u
-	LEFT JOIN #country_mapping cm
-		ON cm.iso_a3 = u.iso_a3_country_code
-	LEFT JOIN #region_map rm
-		ON rm.country_name = cm.country_name
-	WHERE
-		u.pct_insiders IS NOT NULL
-		AND u.iso_a3_country_code IS NOT NULL
-		AND rm.region_name IS NOT NULL
-),
-q AS (
-	SELECT
-		b.*,
-		PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY value_pct_insiders)
-			OVER (PARTITION BY region_name) AS q1,
-		PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY value_pct_insiders)
-			OVER (PARTITION BY region_name) AS median,
-		PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY value_pct_insiders)
-			OVER (PARTITION BY region_name) AS q3
-	FROM base b
-),
-fences AS (
-	SELECT
-		q.*,
-		(q1 - 1.5 * (q3 - q1)) AS lower_fence,
-		(q3 + 1.5 * (q3 - q1)) AS upper_fence
-	FROM q
-),
-annotated AS (
-	SELECT
-		f.*,
-		MIN(CASE WHEN f.value_pct_insiders >= f.lower_fence THEN f.value_pct_insiders END)
-			OVER (PARTITION BY f.region_name) AS whisker_low,
-		MAX(CASE WHEN f.value_pct_insiders <= f.upper_fence THEN f.value_pct_insiders END)
-			OVER (PARTITION BY f.region_name) AS whisker_high,
-		COUNT(*) OVER (PARTITION BY f.region_name) AS n_universities
-	FROM fences f
-)
-
-SELECT *
-INTO #boxplot_region_annotated
-FROM annotated;
-
--- 1) points table (regional)
-SELECT
-	region_name,
-	university_ror_id,
-	university_name,
-	iso_a3_country_code,
-	value_pct_insiders
-INTO #boxplot_points_region
-FROM #boxplot_region_annotated;
-
--- 2) stats table (distinct per region)
-SELECT DISTINCT
-	region_name,
-	n_universities,
-	q1, median, q3,
-	whisker_low, whisker_high
-INTO #boxplot_stats_region
-FROM #boxplot_region_annotated;
-
-CREATE INDEX ix_boxplot_points_region ON #boxplot_points_region (region_name);
-CREATE INDEX ix_boxplot_stats_region  ON #boxplot_stats_region  (region_name);
-
--- 3) country points table
-IF OBJECT_ID('tempdb..#boxplot_points_country', 'U') IS NOT NULL 
-    DROP TABLE #boxplot_points_country;
-
-SELECT
-	iso_a3_country_code,
-	university_ror_id,
-	university_name,
-	value_pct_insiders
-INTO #boxplot_points_country
-FROM #boxplot_region_annotated;
-
-CREATE INDEX ix_boxplot_points_country ON #boxplot_points_country (iso_a3_country_code);
-
--- OUTPUT 3: boxplot geometry per region
-SELECT
-	region_name,
-	n_universities,
-	q1, median, q3,
-	whisker_low, whisker_high
-FROM #boxplot_stats_region
-ORDER BY region_name;
-
--- OUTPUT 4: point list (dots) by region, with outlier flag
-SELECT
-	p.region_name,
-	p.university_ror_id,
-	p.university_name,
-	p.iso_a3_country_code,
-	p.value_pct_insiders,
-	CASE
-		WHEN p.value_pct_insiders < s.whisker_low
-		  OR p.value_pct_insiders > s.whisker_high
-		THEN 1 ELSE 0
-	END AS is_outlier
-FROM #boxplot_points_region p
-JOIN #boxplot_stats_region s
-  ON s.region_name = p.region_name
-ORDER BY p.region_name, p.value_pct_insiders;
-
-
--- OUTPUT 5: boxplot geometry per country (all countries with Leiden universities)
-;WITH country_stats AS (
-	SELECT DISTINCT
-		iso_a3_country_code,
-		COUNT(*) OVER (PARTITION BY iso_a3_country_code) AS n_universities,
-		PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY value_pct_insiders) OVER (PARTITION BY iso_a3_country_code) AS q1,
-		PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY value_pct_insiders) OVER (PARTITION BY iso_a3_country_code) AS median,
-		PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY value_pct_insiders) OVER (PARTITION BY iso_a3_country_code) AS q3,
-		value_pct_insiders
-	FROM #boxplot_region_annotated
-),
-country_whiskers AS (
-	SELECT
-		cs.*,
-		(q1 - 1.5 * (q3 - q1)) AS lower_fence,
-		(q3 + 1.5 * (q3 - q1)) AS upper_fence
-	FROM country_stats cs
-)
-SELECT DISTINCT
-	cw.iso_a3_country_code,
-	cm.country_name,
-	cw.n_universities,
-	cw.q1, 
-	cw.median, 
-	cw.q3,
-	MIN(CASE WHEN cw.value_pct_insiders >= cw.lower_fence THEN cw.value_pct_insiders END) OVER (PARTITION BY cw.iso_a3_country_code) AS whisker_low,
-	MAX(CASE WHEN cw.value_pct_insiders <= cw.upper_fence THEN cw.value_pct_insiders END) OVER (PARTITION BY cw.iso_a3_country_code) AS whisker_high
-FROM country_whiskers cw
-LEFT JOIN #country_mapping cm 
-	ON cw.iso_a3_country_code = cm.iso_a3
-ORDER BY n_universities DESC;
-
--- OUTPUT 6: point list (dots) by country, with outlier flag
-;WITH country_stats AS (
-	SELECT DISTINCT
-		iso_a3_country_code,
-		COUNT(*) OVER (PARTITION BY iso_a3_country_code) AS n_universities,
-		PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY value_pct_insiders) OVER (PARTITION BY iso_a3_country_code) AS q1,
-		PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY value_pct_insiders) OVER (PARTITION BY iso_a3_country_code) AS median,
-		PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY value_pct_insiders) OVER (PARTITION BY iso_a3_country_code) AS q3,
-		value_pct_insiders
-	FROM #boxplot_region_annotated
-),
-country_whiskers AS (
-	SELECT
-		cs.*,
-		(q1 - 1.5 * (q3 - q1)) AS lower_fence,
-		(q3 + 1.5 * (q3 - q1)) AS upper_fence
-	FROM country_stats cs
-),
-country_with_whiskers AS (
-	SELECT DISTINCT
-		cw.iso_a3_country_code,
-		cw.n_universities,
-		cw.median,
-		MIN(CASE WHEN cw.value_pct_insiders >= cw.lower_fence THEN cw.value_pct_insiders END) OVER (PARTITION BY cw.iso_a3_country_code) AS whisker_low,
-		MAX(CASE WHEN cw.value_pct_insiders <= cw.upper_fence THEN cw.value_pct_insiders END) OVER (PARTITION BY cw.iso_a3_country_code) AS whisker_high
-	FROM country_whiskers cw
-)
-SELECT
-	p.iso_a3_country_code,
-	cm.country_name,
-	p.university_ror_id,
-	p.university_name,
-	p.value_pct_insiders,
-	s.n_universities,
-	s.median,
-	CASE
-		WHEN p.value_pct_insiders < s.whisker_low
-		  OR p.value_pct_insiders > s.whisker_high
-		THEN 1 ELSE 0
-	END AS is_outlier
-FROM #boxplot_points_country p
-JOIN country_with_whiskers s
-	ON s.iso_a3_country_code = p.iso_a3_country_code
-LEFT JOIN #country_mapping cm
-	ON p.iso_a3_country_code = cm.iso_a3
-ORDER BY s.n_universities DESC, p.iso_a3_country_code, p.value_pct_insiders;
-
-
--- SECTION 6.7: COUNTRY-LEVEL SHARE OF INSIDERS (MAP INPUT)
-IF OBJECT_ID('tempdb..#backward_country_insiders', 'U') IS NOT NULL
-    DROP TABLE #backward_country_insiders;
-
-SELECT
-    but.iso_a3_country_code                                 AS country_code,
-    cm.country_name                                         AS country_name,
-    SUM(but.n_researchers)                                  AS n_researchers,
-    SUM(but.n_insiders)                                     AS n_insiders,
-    CAST(
-        100.0 * SUM(but.n_insiders) / NULLIF(SUM(but.n_researchers), 0)
-        AS DECIMAL(6,2)
-    ) AS pct_insiders_weighted
-INTO #backward_country_insiders
-FROM #backward_university_table but
-LEFT JOIN #country_mapping cm
-    ON but.iso_a3_country_code = cm.iso_a3
-WHERE but.iso_a3_country_code IS NOT NULL
-GROUP BY
-    but.iso_a3_country_code,
-    cm.country_name;
-
-CREATE INDEX ix_backward_country_insiders
-    ON #backward_country_insiders (country_code, n_researchers);
-
--- Output for mapping
-SELECT
-    country_code       AS iso_a3,
-    country_name,
-    n_researchers,
-    FORMAT(pct_insiders_weighted, '0.00', 'en-US') AS pct_insiders_weighted
-FROM #backward_country_insiders;
-
-
-
-
-
--- ============================================
--- SECTION 7: International mobility flows
--- ============================================
-
--- Define the 12 selected countries (ISO A3)
-IF OBJECT_ID('tempdb..#selected_countries', 'U') IS NOT NULL
-    DROP TABLE #selected_countries;
-
-CREATE TABLE #selected_countries (country_code CHAR(3) PRIMARY KEY);
-
-INSERT INTO #selected_countries (country_code) VALUES
-('USA'), ('CHN'), ('IND'), ('GBR'), ('DEU'), ('EGY'), ('ESP'), ('ARE'),
-('BRA'), ('RUS'), ('JPN'), ('KOR');
-
-
--- 7.1 Country-level summary for selected countries: share of returnees
-
-SELECT
-    sc.country_code,
-    cm.country_name,
-    COALESCE(dst.n_destination_active, 0) AS n_destination_active,
-
-    SUM(CASE WHEN bm.is_returnee = 1 THEN 1 ELSE 0 END) AS n_returnees,
-
-    CAST(100.0 * SUM(CASE WHEN bm.is_returnee = 1 THEN 1 ELSE 0 END) / NULLIF(COUNT(DISTINCT bm.researcher_id),0) AS DECIMAL(6,1))
-        AS pct_returnees
-
-FROM #selected_countries sc
-LEFT JOIN #country_mapping cm
-    ON sc.country_code = cm.iso_a3
-LEFT JOIN #destination_lr_active dst
-    ON sc.country_code = dst.destination_country
-LEFT JOIN #backward_mobility bm
-    ON sc.country_code = bm.dest_country
-GROUP BY
-    sc.country_code,
-    cm.country_name,
-    dst.n_destination_active
-ORDER BY
-    n_destination_active DESC;
-
-
--- 7.2 Top 6 source countries of researchers who arrived (inbound) — for each selected destination country
-
-;WITH inbound_ranked AS (
-    SELECT
-        b.destination_country        AS focal_country,
-        b.origin_country             AS source_country,
-        COALESCE(cm.country_name, b.origin_country) AS source_country_name,
-        b.n_researchers,
-        d.n_destination_active,
-        ROW_NUMBER() OVER (
-            PARTITION BY b.destination_country
-            ORDER BY b.n_researchers DESC
-        ) AS rn
-    FROM #backward_mobility_matrix b
-    LEFT JOIN #country_mapping cm
-        ON b.origin_country = cm.iso_a3
-    JOIN #destination_lr_active d
-        ON b.destination_country = d.destination_country
-    WHERE b.destination_country IN (SELECT country_code FROM #selected_countries)
-)
-SELECT
-    ir.focal_country                      AS destination_country_code,
-    cmf.country_name                      AS destination_country_name,
-    ir.source_country                     AS origin_country_code,
-    ir.source_country_name                AS origin_country_name,
-    ir.n_researchers,
-    ir.n_destination_active,
-    CAST(100.0 * ir.n_researchers / NULLIF(ir.n_destination_active, 0) AS DECIMAL(6,2)) 
-        AS pct_of_destination_total
-FROM inbound_ranked ir
-LEFT JOIN #country_mapping cmf
-    ON ir.focal_country = cmf.iso_a3
-WHERE ir.rn <= 6
-ORDER BY ir.focal_country, ir.rn;
-
-
--- 7.3 Top 6 destination countries of researchers who left (outbound) — for each selected origin country
-
-
--- Rank outbound destinations per selected origin and compute % of origin total
-;WITH outbound_ranked AS (
-    SELECT
-        cf.origin_country   AS focal_country,
-        cf.destination_country AS dest_country,
-        COALESCE(cm.country_name, cf.destination_country) AS dest_country_name,
-        cf.n_researchers,
-        ot.n_origin_total,
-        ROW_NUMBER() OVER (
-            PARTITION BY cf.origin_country
-            ORDER BY cf.n_researchers DESC
-        ) AS rn
-    FROM #country_flows_lr cf
-    LEFT JOIN #country_mapping cm
-        ON cf.destination_country = cm.iso_a3
-    LEFT JOIN #origin_totals ot
-        ON cf.origin_country = ot.origin_country
-    WHERE cf.origin_country IN (SELECT country_code FROM #selected_countries)
-)
-SELECT
-    orr.focal_country                     AS origin_country_code,
-    cmo.country_name                      AS origin_country_name,
-    orr.dest_country                      AS destination_country_code,
-    orr.dest_country_name                 AS destination_country_name,
-    orr.n_researchers,
-    orr.n_origin_total,
-    CAST(100.0 * orr.n_researchers / NULLIF(orr.n_origin_total, 0) AS DECIMAL(6,2))
-        AS pct_of_origin_total
-FROM outbound_ranked orr
-LEFT JOIN #country_mapping cmo
-    ON orr.focal_country = cmo.iso_a3
-WHERE orr.rn <= 6
-ORDER BY orr.focal_country, orr.rn;
-
-
--- 7.4 Researcher-level forward mobility classification (forward_mobility)
-IF OBJECT_ID('tempdb..#forward_mobility', 'U') IS NOT NULL
-    DROP TABLE #forward_mobility;
-
-WITH origin_base AS (
-    SELECT DISTINCT
-        fy.researcher_id,
-        fy.ror_id AS origin_ror_id,
-        fy.lr_university_name AS origin_university,
-        fy.country_code AS origin_country
-    FROM #first_year_LR fy
-),
-
-returnee_base AS (
-    SELECT
-        o.researcher_id,
-        o.origin_ror_id,
-        CASE
-            -- Origin was in same country
-            WHEN EXISTS (
-                SELECT 1
-                FROM #last_year_LR ly
-                WHERE ly.researcher_id = o.researcher_id
-                  AND ly.country_code = o.origin_country  -- Returned to origin country
-            )
-            -- Published in different country during destination window
-            AND EXISTS (
-                SELECT 1
-                FROM #dest_window_LR_all_years dw
-                JOIN #lr_unis lr ON dw.ror_id = lr.ror_id
-                JOIN #country_mapping cm ON lr.lr_country_code = cm.iso_a2
-                WHERE dw.researcher_id = o.researcher_id
-                  AND cm.iso_a3 <> o.origin_country  -- Different from origin country
-            )
-            THEN 1 ELSE 0
-        END AS is_returnee
-    FROM origin_base o
-)
-
-SELECT
-    o.researcher_id,
-    o.origin_ror_id,
-    o.origin_university,
-    o.origin_country,
-    CASE
-        WHEN EXISTS (
-            SELECT 1
-            FROM #last_year_LR ly
-            WHERE ly.researcher_id = o.researcher_id
-              AND ly.ror_id = o.origin_ror_id
-        ) THEN 'Insider'
-
-        WHEN EXISTS (
-            SELECT 1
-            FROM #last_year_LR ly
-            WHERE ly.researcher_id = o.researcher_id
-              AND ly.country_code = o.origin_country
-        )
-        AND NOT EXISTS (
-            SELECT 1
-            FROM #last_year_LR ly
-            WHERE ly.researcher_id = o.researcher_id
-              AND ly.ror_id = o.origin_ror_id
-        ) THEN 'Domestic outsider'
-
-        WHEN EXISTS (
-            SELECT 1
-            FROM #last_year_LR ly
-            WHERE ly.researcher_id = o.researcher_id
-        ) THEN 'Foreign outsider'
-
-        WHEN EXISTS (
-            SELECT 1
-            FROM #last_pub_year lp
-            WHERE lp.researcher_id = o.researcher_id
-        ) THEN 'Outside LR / missing affiliation'
-
-        ELSE 'No publications in analysis window'
-    END AS status,
-    ISNULL(rb.is_returnee, 0) AS is_returnee
-INTO #forward_mobility
-FROM origin_base o
-LEFT JOIN returnee_base rb
-    ON o.researcher_id = rb.researcher_id
-   AND o.origin_ror_id = rb.origin_ror_id;
-
-CREATE INDEX ix_forward_mobility
-    ON #forward_mobility (origin_country, origin_ror_id, status, researcher_id);
-
-
--- FORWARD: University-level table for origin (forward-looking) perspective with ROR
-
-IF OBJECT_ID('tempdb..#forward_university_table', 'U') IS NOT NULL
-    DROP TABLE #forward_university_table;
-
-SELECT
-    fm.origin_ror_id                                              AS university_ror_id,
-    COALESCE(r.lr_university_name, fm.origin_university)          AS university_name,
-    COALESCE(fm.origin_country, cm.iso_a3)                        AS iso_a3_country_code,
-    FORMAT(r.latitude, '0.###############', 'en-US')             AS latitude,
-    FORMAT(r.longitude, '0.###############', 'en-US')            AS longitude,
-    COUNT(DISTINCT fm.researcher_id)                             AS n_researchers,
-    SUM(CASE WHEN fm.status = 'Insider' THEN 1 ELSE 0 END)       AS n_insiders,
-    CAST(
-        100.0 * SUM(CASE WHEN fm.status = 'Insider' THEN 1 ELSE 0 END)
-        / NULLIF(COUNT(DISTINCT fm.researcher_id), 0)
-        AS DECIMAL(6,2)
-    ) AS pct_insiders
-INTO #forward_university_table
-FROM #forward_mobility fm
-LEFT JOIN #lr_unis r
-    ON fm.origin_ror_id = r.ror_id
-LEFT JOIN #country_mapping cm
-    ON r.lr_country_code = cm.iso_a2
-GROUP BY
-    fm.origin_ror_id,
-    COALESCE(r.lr_university_name, fm.origin_university),
-    COALESCE(fm.origin_country, cm.iso_a3),
-    r.latitude,
-    r.longitude;
-
-CREATE INDEX ix_forward_university_table ON #forward_university_table (iso_a3_country_code, n_researchers);
-
-SELECT
-    university_ror_id,
-    university_name,
-    iso_a3_country_code,
-    latitude,
-    longitude,
-    n_researchers,
-    n_insiders,
-    pct_insiders
-FROM #forward_university_table
-ORDER BY n_researchers DESC;
-
--- 7.5 Forward-looking origin outcomes for selected countries
-
-;WITH outbound_ranked AS (
-    SELECT
-        cf.origin_country   AS focal_country,
-        cf.destination_country AS dest_country,
-        COALESCE(cm.country_name, cf.destination_country) AS dest_country_name,
-        cf.n_researchers,
-        ot.n_origin_total,
-        ROW_NUMBER() OVER (
-            PARTITION BY cf.origin_country
-            ORDER BY cf.n_researchers DESC
-        ) AS rn
-    FROM #country_flows_lr cf
-    LEFT JOIN #country_mapping cm
-        ON cf.destination_country = cm.iso_a3
-    LEFT JOIN #origin_totals ot
-        ON cf.origin_country = ot.origin_country
-    WHERE cf.origin_country IN (SELECT country_code FROM #selected_countries)
-)
-
-/* Destination rows (rn 1..6) */
-, dest_rows AS (
-    SELECT
-        orr.focal_country                     AS origin_country_code,
-        cmo.country_name                      AS origin_country_name,
-        orr.dest_country                      AS destination_country_code,
-        orr.dest_country_name                 AS destination_country_name,
-        orr.n_researchers,
-        orr.n_origin_total,
-        CAST(100.0 * orr.n_researchers / NULLIF(orr.n_origin_total, 0) AS DECIMAL(6,2))
-            AS pct_of_origin_total,
-        orr.rn                                AS display_order
-    FROM outbound_ranked orr
-    LEFT JOIN #country_mapping cmo
-        ON orr.focal_country = cmo.iso_a3
-    WHERE orr.rn <= 6
-)
-
-/* Status rows (two per origin): Active outside LR; No publications */
-, status_rows AS (
-    SELECT
-        fm.origin_country                       AS origin_country_code,
-        cm_orig.country_name                    AS origin_country_name,
-        NULL                                    AS destination_country_code,
-        fm.status AS status_label,
-        COUNT(DISTINCT fm.researcher_id)        AS n_researchers,
-        ot.n_origin_total,
-        CAST(100.0 * COUNT(DISTINCT fm.researcher_id) / NULLIF(ot.n_origin_total,0) AS DECIMAL(6,2))
-            AS pct_of_origin_total,
-        CASE
-            WHEN fm.status = 'Outside LR / missing affiliation' THEN 99
-            WHEN fm.status = 'No publications in analysis window' THEN 100
-            ELSE 101
-        END AS display_order
-    FROM #forward_mobility fm
-    LEFT JOIN #origin_totals ot
-        ON fm.origin_country = ot.origin_country
-    LEFT JOIN #country_mapping cm_orig
-        ON fm.origin_country = cm_orig.iso_a3
-    WHERE fm.origin_country IN (SELECT country_code FROM #selected_countries)
-      AND fm.status IN ('Outside LR / missing affiliation', 'No publications in analysis window')
-    GROUP BY fm.origin_country, fm.status, ot.n_origin_total, cm_orig.country_name
-)
-
-/* Normalize status_rows columns to match dest_rows schema and union them */
-SELECT
-    dr.origin_country_code,
-    dr.origin_country_name,
-    dr.destination_country_code,
-    dr.destination_country_name,
-    dr.n_researchers,
-    dr.n_origin_total,
-    dr.pct_of_origin_total,
-    dr.display_order
-FROM dest_rows dr
-
-UNION ALL
-
-SELECT
-    sr.origin_country_code,
-    sr.origin_country_name,
-    sr.destination_country_code,
-    CASE 
-        WHEN sr.status_label = 'Outside LR / missing affiliation' THEN 'Active outside Leiden Ranking'
-        WHEN sr.status_label = 'No publications in analysis window' THEN 'No publications in analysis window'
-        ELSE sr.status_label
-    END AS destination_country_name,
-    sr.n_researchers,
-    sr.n_origin_total,
-    sr.pct_of_origin_total,
-    sr.display_order
-FROM status_rows sr
-
-ORDER BY origin_country_name, display_order, destination_country_name;
-
-
--- SECTION 7.6: Last observed location for researchers with no publications in destination window
-
--- 7.6.1 Identify researchers with no publications in destination window
+-- 4.3a Identify inactive researchers
 IF OBJECT_ID('tempdb..#inactive_researchers', 'U') IS NOT NULL
     DROP TABLE #inactive_researchers;
 
-SELECT DISTINCT
-    researcher_id
+SELECT DISTINCT researcher_id
 INTO #inactive_researchers
 FROM #origin_one
 WHERE researcher_id NOT IN (
-    SELECT DISTINCT researcher_id 
-    FROM #last_pub_year
+    SELECT DISTINCT researcher_id FROM #last_pub_year
 );
 
 CREATE INDEX ix_inactive_researchers ON #inactive_researchers (researcher_id);
 
 
--- 7.6.2 Find last observed publication for inactive researchers (anywhere, any time after origin window)
+-- 4.3b Last observed publication between the two windows
 IF OBJECT_ID('tempdb..#last_observed_pub', 'U') IS NOT NULL
     DROP TABLE #last_observed_pub;
 
@@ -1279,17 +390,16 @@ SELECT
     MAX(p.pub_year) AS last_observed_year
 INTO #last_observed_pub
 FROM dimensions_2025jul.dbo.pub_author pa
-JOIN dimensions_2025jul.dbo.pub p
-    ON pa.pub_id = p.pub_id
+JOIN dimensions_2025jul.dbo.pub p ON pa.pub_id = p.pub_id
 WHERE pa.researcher_id IN (SELECT researcher_id FROM #inactive_researchers)
-    AND p.pub_year > @first_end_year  -- After origin window
-    AND p.pub_year < @last_start_year  -- Before destination window
+  AND p.pub_year > @first_end_year
+  AND p.pub_year < @last_start_year
 GROUP BY pa.researcher_id;
 
 CREATE INDEX ix_last_observed_pub ON #last_observed_pub (researcher_id, last_observed_year);
 
 
--- 7.6.3 Get affiliation details for last observed publication
+-- 4.3c Affiliation details at last observed publication
 IF OBJECT_ID('tempdb..#last_observed_affiliation', 'U') IS NOT NULL
     DROP TABLE #last_observed_affiliation;
 
@@ -1298,7 +408,7 @@ SELECT DISTINCT
     lop.last_observed_year,
     o.ror_id,
     lr.lr_university_name,
-    cm.iso_a3 AS country_code,
+    cm.iso_a3  AS country_code,
     o1.origin_country,
     o1.origin_ror_id
 INTO #last_observed_affiliation
@@ -1307,13 +417,13 @@ JOIN dimensions_2025jul.dbo.pub_author pa
     ON lop.researcher_id = pa.researcher_id
 JOIN dimensions_2025jul.dbo.pub p
     ON pa.pub_id = p.pub_id
-    AND p.pub_year = lop.last_observed_year
+   AND p.pub_year = lop.last_observed_year
 JOIN dimensions_2025jul.dbo.pub_author_affiliation paa
     ON pa.pub_id = paa.pub_id
-    AND pa.author_seq = paa.author_seq
+   AND pa.author_seq = paa.author_seq
 JOIN dimensions_2025jul.dbo.pub_affiliation_organization pao
     ON paa.pub_id = pao.pub_id
-    AND paa.affiliation_seq = pao.affiliation_seq
+   AND paa.affiliation_seq = pao.affiliation_seq
 JOIN dimensions_2025jul.dbo.organization o
     ON pao.grid_id = o.grid_id
 LEFT JOIN #lr_unis lr
@@ -1326,7 +436,7 @@ JOIN #origin_one o1
 CREATE INDEX ix_last_observed_affiliation ON #last_observed_affiliation (researcher_id, country_code);
 
 
--- 7.6.4 Classify inactive researchers by last observed location
+-- 4.3d Classify inactive researchers by last observed location
 IF OBJECT_ID('tempdb..#inactive_classification', 'U') IS NOT NULL
     DROP TABLE #inactive_classification;
 
@@ -1335,107 +445,852 @@ SELECT
     loa.origin_country,
     loa.last_observed_year,
     CASE
-        WHEN loa.ror_id = loa.origin_ror_id THEN 'Last observed as insider'
-        WHEN loa.country_code = loa.origin_country THEN 'Last observed as domestic outsider'
+        WHEN loa.ror_id = loa.origin_ror_id                                        THEN 'Last observed as insider'
+        WHEN loa.country_code = loa.origin_country                                 THEN 'Last observed as domestic outsider'
         WHEN loa.country_code IS NOT NULL AND loa.country_code <> loa.origin_country THEN 'Last observed abroad'
-        ELSE 'Last observed outside Leiden Ranking'
+        ELSE                                                                             'Last observed outside Leiden Ranking'
     END AS last_observed_status,
-    CASE 
-        WHEN loa.ror_id IS NOT NULL THEN 1 
-        ELSE 0 
-    END AS was_at_lr_institution
+    CASE WHEN loa.ror_id IS NOT NULL THEN 1 ELSE 0 END AS was_at_lr_institution
 INTO #inactive_classification
 FROM #last_observed_affiliation loa;
 
--- Handle researchers never observed after origin window
-INSERT INTO #inactive_classification (researcher_id, origin_country, last_observed_year, last_observed_status, was_at_lr_institution)
-SELECT 
+-- Add researchers with no publications at all after the origin window
+INSERT INTO #inactive_classification
+    (researcher_id, origin_country, last_observed_year, last_observed_status, was_at_lr_institution)
+SELECT
     ir.researcher_id,
     o1.origin_country,
-    NULL AS last_observed_year,
-    'No publications after origin window' AS last_observed_status,
-    0 AS was_at_lr_institution
+    NULL,
+    'No publications after origin window',
+    0
 FROM #inactive_researchers ir
-JOIN #origin_one o1
-    ON ir.researcher_id = o1.researcher_id
+JOIN #origin_one o1 ON ir.researcher_id = o1.researcher_id
 WHERE ir.researcher_id NOT IN (SELECT researcher_id FROM #last_observed_affiliation);
 
 CREATE INDEX ix_inactive_classification ON #inactive_classification (origin_country, last_observed_status);
 
+-- ============================================
+-- SECTION 5: FORWARD-LOOKING ANALYSIS
+-- Origin perspective: where did origin-window researchers end up?
+-- ============================================
 
--- 7.6.5 OUTPUT: Summary by origin country for selected countries
+-- 5.1 Global researcher status summary
 SELECT
-    sc.country_code,
+    researcher_status,
+    COUNT(*)                                                              AS n_researchers,
+    CAST(100.0 * COUNT(*) / SUM(COUNT(*)) OVER () AS DECIMAL(6,2))       AS pct_of_total
+FROM #researcher_status
+GROUP BY researcher_status
+ORDER BY n_researchers DESC;
+
+
+-- 5.2 Forward mobility: researcher-level classification
+IF OBJECT_ID('tempdb..#forward_mobility', 'U') IS NOT NULL
+    DROP TABLE #forward_mobility;
+
+WITH origin_base AS (
+    SELECT DISTINCT
+        fy.researcher_id,
+        fy.ror_id            AS origin_ror_id,
+        fy.lr_university_name AS origin_university,
+        fy.country_code      AS origin_country
+    FROM #first_year_LR fy
+),
+returnee_base AS (
+    SELECT
+        o.researcher_id,
+        o.origin_ror_id,
+        CASE
+            WHEN EXISTS (
+                SELECT 1 FROM #last_year_LR ly
+                WHERE ly.researcher_id = o.researcher_id
+                  AND ly.country_code  = o.origin_country
+            )
+            AND EXISTS (
+                SELECT 1
+                FROM #dest_window_LR_all_years dw
+                JOIN #lr_unis lr        ON dw.ror_id           = lr.ror_id
+                JOIN #country_mapping cm ON lr.lr_country_code = cm.iso_a2
+                WHERE dw.researcher_id = o.researcher_id
+                  AND cm.iso_a3 <> o.origin_country
+            )
+            THEN 1 ELSE 0
+        END AS is_returnee
+    FROM origin_base o
+)
+SELECT
+    o.researcher_id,
+    o.origin_ror_id,
+    o.origin_university,
+    o.origin_country,
+    CASE
+        WHEN EXISTS (
+            SELECT 1 FROM #last_year_LR ly
+            WHERE ly.researcher_id = o.researcher_id AND ly.ror_id = o.origin_ror_id
+        ) THEN 'Insider'
+        WHEN EXISTS (
+            SELECT 1 FROM #last_year_LR ly
+            WHERE ly.researcher_id = o.researcher_id AND ly.country_code = o.origin_country
+        ) AND NOT EXISTS (
+            SELECT 1 FROM #last_year_LR ly
+            WHERE ly.researcher_id = o.researcher_id AND ly.ror_id = o.origin_ror_id
+        ) THEN 'Domestic outsider'
+        WHEN EXISTS (
+            SELECT 1 FROM #last_year_LR ly WHERE ly.researcher_id = o.researcher_id
+        ) THEN 'Foreign outsider'
+        WHEN EXISTS (
+            SELECT 1 FROM #last_pub_year lp WHERE lp.researcher_id = o.researcher_id
+        ) THEN 'Outside LR / missing affiliation'
+        ELSE 'No publications in analysis window'
+    END AS status,
+    ISNULL(rb.is_returnee, 0) AS is_returnee
+INTO #forward_mobility
+FROM origin_base o
+LEFT JOIN returnee_base rb
+    ON o.researcher_id = rb.researcher_id
+   AND o.origin_ror_id  = rb.origin_ror_id;
+
+CREATE INDEX ix_forward_mobility
+    ON #forward_mobility (origin_country, origin_ror_id, status, researcher_id);
+
+
+-- 5.3 Forward mobility: university-level table (origin perspective)
+IF OBJECT_ID('tempdb..#forward_university_table', 'U') IS NOT NULL
+    DROP TABLE #forward_university_table;
+
+SELECT
+    fm.origin_ror_id                                          AS university_ror_id,
+    COALESCE(r.lr_university_name, fm.origin_university)      AS university_name,
+    COALESCE(fm.origin_country, cm.iso_a3)                    AS iso_a3_country_code,
+    FORMAT(r.latitude,  '0.###############', 'en-US')         AS latitude,
+    FORMAT(r.longitude, '0.###############', 'en-US')         AS longitude,
+    COUNT(DISTINCT fm.researcher_id)                          AS n_researchers,
+    SUM(CASE WHEN fm.status = 'Insider' THEN 1 ELSE 0 END)    AS n_insiders,
+    CAST(
+        100.0 * SUM(CASE WHEN fm.status = 'Insider' THEN 1 ELSE 0 END)
+        / NULLIF(COUNT(DISTINCT fm.researcher_id), 0)
+        AS DECIMAL(6,2)
+    ) AS pct_insiders
+INTO #forward_university_table
+FROM #forward_mobility fm
+LEFT JOIN #lr_unis r         ON fm.origin_ror_id      = r.ror_id
+LEFT JOIN #country_mapping cm ON r.lr_country_code    = cm.iso_a2
+GROUP BY
+    fm.origin_ror_id,
+    COALESCE(r.lr_university_name, fm.origin_university),
+    COALESCE(fm.origin_country, cm.iso_a3),
+    r.latitude,
+    r.longitude;
+
+CREATE INDEX ix_forward_university_table
+    ON #forward_university_table (iso_a3_country_code, n_researchers);
+
+-- Output: university-level forward mobility
+SELECT
+    university_ror_id,
+    university_name,
+    iso_a3_country_code,
+    latitude,
+    longitude,
+    n_researchers,
+    n_insiders,
+    pct_insiders
+FROM #forward_university_table
+ORDER BY n_researchers DESC;
+
+
+-- 5.4 Forward country stats (intermediate aggregate — used in Sections 5.5 and 7)
+IF OBJECT_ID('tempdb..#forward_country_stats', 'U') IS NOT NULL
+    DROP TABLE #forward_country_stats;
+
+SELECT
+    iso_a3_country_code                                        AS country_code,
+    SUM(n_researchers)                                         AS total_researchers_origin,
+    SUM(n_insiders)                                            AS total_insiders_forward,
+    CAST(100.0 * SUM(n_insiders) / NULLIF(SUM(n_researchers), 0) AS DECIMAL(6,2))
+                                                               AS pct_insiders_forward
+INTO #forward_country_stats
+FROM #forward_university_table
+GROUP BY iso_a3_country_code;
+
+CREATE INDEX ix_forward_country_stats ON #forward_country_stats (country_code);
+
+-- 5.5 Active researchers at LR in destination window, by country
+IF OBJECT_ID('tempdb..#destination_lr_active', 'U') IS NOT NULL
+    DROP TABLE #destination_lr_active;
+
+SELECT
+    ly.country_code            AS destination_country,
+    COUNT(DISTINCT ly.researcher_id) AS n_destination_active
+INTO #destination_lr_active
+FROM #last_year_LR ly
+GROUP BY ly.country_code;
+
+CREATE INDEX ix_destination_lr_active ON #destination_lr_active (destination_country);
+
+
+-- 5.6 Backward mobility: researcher-level classification and returnee detection
+IF OBJECT_ID('tempdb..#backward_mobility', 'U') IS NOT NULL
+    DROP TABLE #backward_mobility;
+
+WITH dest_base AS (
+    SELECT DISTINCT
+        ly.researcher_id,
+        ly.ror_id            AS dest_ror_id,
+        ly.lr_university_name AS dest_university,
+        ly.country_code      AS dest_country
+    FROM #last_year_LR ly
+)
+SELECT
+    d.researcher_id,
+    d.dest_ror_id,
+    d.dest_university,
+    d.dest_country,
+    CASE
+        WHEN EXISTS (
+            SELECT 1 FROM #first_year_LR fy
+            WHERE fy.researcher_id = d.researcher_id AND fy.ror_id = d.dest_ror_id
+        ) THEN 'Insider'
+        WHEN EXISTS (
+            SELECT 1 FROM #first_year_LR fy
+            WHERE fy.researcher_id = d.researcher_id AND fy.country_code = d.dest_country
+        ) AND NOT EXISTS (
+            SELECT 1 FROM #first_year_LR fy
+            WHERE fy.researcher_id = d.researcher_id AND fy.ror_id = d.dest_ror_id
+        ) THEN 'Domestic outsider'
+        ELSE 'Foreign outsider'
+    END AS status,
+    CASE
+        WHEN EXISTS (
+            SELECT 1 FROM #first_year_LR fy
+            WHERE fy.researcher_id = d.researcher_id AND fy.country_code = d.dest_country
+        )
+        AND EXISTS (
+            SELECT 1
+            FROM #dest_window_LR_all_years dw
+            JOIN #lr_unis lr        ON dw.ror_id           = lr.ror_id
+            JOIN #country_mapping cm ON lr.lr_country_code = cm.iso_a2
+            WHERE dw.researcher_id = d.researcher_id
+              AND cm.iso_a3 <> d.dest_country
+        )
+        THEN 1 ELSE 0
+    END AS is_returnee
+INTO #backward_mobility
+FROM dest_base d;
+
+CREATE INDEX ix_backward_mobility
+    ON #backward_mobility (dest_country, dest_ror_id, status, researcher_id);
+
+
+	-- 5.7 Returnee stats (intermediate aggregate — used in Sections 5.5 and 7)
+IF OBJECT_ID('tempdb..#returnee_country_stats', 'U') IS NOT NULL
+    DROP TABLE #returnee_country_stats;
+
+SELECT
+    dest_country                                                      AS country_code,
+    COUNT(DISTINCT researcher_id)                                     AS total_researchers_dest_detailed,
+    SUM(CASE WHEN is_returnee = 1 THEN 1 ELSE 0 END)                  AS n_returnees,
+    CAST(100.0 * SUM(CASE WHEN is_returnee = 1 THEN 1 ELSE 0 END)
+        / NULLIF(COUNT(DISTINCT researcher_id), 0) AS DECIMAL(6,1))   AS pct_returnees
+INTO #returnee_country_stats
+FROM #backward_mobility   
+GROUP BY dest_country;
+
+CREATE INDEX ix_returnee_country_stats ON #returnee_country_stats (country_code);
+
+-- 5.8 TABLE 1: Forward/origin country summary
+--     Denominator: all researchers with any first-window LR affiliation
+--     Filter: countries with > 5000 researchers
+
+SELECT
+    ot.origin_country                                                  AS country_code,
     cm.country_name,
     ot.n_origin_total,
-    
-    COUNT(DISTINCT ic.researcher_id) AS n_inactive_researchers,
-    
-    CAST(100.0 * COUNT(DISTINCT ic.researcher_id) / NULLIF(ot.n_origin_total, 0) AS DECIMAL(6,1))
+
+    -- High-level destination-window outcomes
+    SUM(CASE WHEN rs.researcher_status = 'Observed at LR in destination window' THEN 1 ELSE 0 END)
+        AS n_observed_at_lr_dest,
+    CAST(100.0 * SUM(CASE WHEN rs.researcher_status = 'Observed at LR in destination window' THEN 1 ELSE 0 END)
+        / NULLIF(ot.n_origin_total, 0) AS DECIMAL(6,2))
+        AS pct_observed_at_lr_dest,
+
+    SUM(CASE WHEN rs.researcher_status = 'Active outside Leiden Ranking' THEN 1 ELSE 0 END)
+        AS n_active_outside_lr,
+    CAST(100.0 * SUM(CASE WHEN rs.researcher_status = 'Active outside Leiden Ranking' THEN 1 ELSE 0 END)
+        / NULLIF(ot.n_origin_total, 0) AS DECIMAL(6,2))
+        AS pct_active_outside_lr,
+
+    SUM(CASE WHEN rs.researcher_status = 'No publications in analysis window' THEN 1 ELSE 0 END)
+        AS n_inactive,
+    CAST(100.0 * SUM(CASE WHEN rs.researcher_status = 'No publications in analysis window' THEN 1 ELSE 0 END)
+        / NULLIF(ot.n_origin_total, 0) AS DECIMAL(6,2))
         AS pct_inactive,
-    
-    SUM(CASE WHEN ic.last_observed_status = 'Last observed as insider' THEN 1 ELSE 0 END) 
-        AS n_last_observed_insider,
-    SUM(CASE WHEN ic.last_observed_status = 'Last observed as domestic outsider' THEN 1 ELSE 0 END) 
-        AS n_last_observed_domestic,
-    SUM(CASE WHEN ic.last_observed_status = 'Last observed abroad' THEN 1 ELSE 0 END) 
-        AS n_last_observed_abroad,
-    SUM(CASE WHEN ic.last_observed_status = 'Last observed outside Leiden Ranking' THEN 1 ELSE 0 END) 
-        AS n_last_observed_outside_lr,
-    SUM(CASE WHEN ic.last_observed_status = 'No publications after origin window' THEN 1 ELSE 0 END) 
-        AS n_no_pubs_after_origin,
-    
-    CAST(100.0 * SUM(CASE WHEN ic.last_observed_status = 'Last observed as insider' THEN 1 ELSE 0 END) 
-        / NULLIF(COUNT(DISTINCT ic.researcher_id), 0) AS DECIMAL(6,1))
-        AS pct_last_insider,
-    CAST(100.0 * SUM(CASE WHEN ic.last_observed_status = 'Last observed as domestic outsider' THEN 1 ELSE 0 END) 
-        / NULLIF(COUNT(DISTINCT ic.researcher_id), 0) AS DECIMAL(6,1))
-        AS pct_last_domestic,
-    CAST(100.0 * SUM(CASE WHEN ic.last_observed_status = 'Last observed abroad' THEN 1 ELSE 0 END) 
-        / NULLIF(COUNT(DISTINCT ic.researcher_id), 0) AS DECIMAL(6,1))
-        AS pct_last_abroad,
-    CAST(100.0 * SUM(CASE WHEN ic.last_observed_status = 'Last observed outside Leiden Ranking' THEN 1 ELSE 0 END) 
-        / NULLIF(COUNT(DISTINCT ic.researcher_id), 0) AS DECIMAL(6,1))
-        AS pct_last_outside_lr,
-    CAST(100.0 * SUM(CASE WHEN ic.last_observed_status = 'No publications after origin window' THEN 1 ELSE 0 END) 
-        / NULLIF(COUNT(DISTINCT ic.researcher_id), 0) AS DECIMAL(6,1))
-        AS pct_no_pubs_after_origin
 
-FROM #selected_countries sc
+    -- Forward insider and returnee shares
+    --   (of those observed at LR in destination window)
+    fcs.pct_insiders_forward,
+    ISNULL(rcs.pct_returnees, 0.0)                                     AS pct_returnees_forward,
+
+    -- Inactive sub-group: last observed location (counts)
+    ic_stats.n_last_insider,
+    ic_stats.n_last_domestic,
+    ic_stats.n_last_abroad,
+    ic_stats.n_last_outside_lr,
+    ic_stats.n_no_pubs_after_origin,
+
+    -- Inactive sub-group: last observed location (% of inactive)
+    CAST(100.0 * ic_stats.n_last_insider
+        / NULLIF(SUM(CASE WHEN rs.researcher_status = 'No publications in analysis window' THEN 1 ELSE 0 END), 0)
+        AS DECIMAL(6,1))  AS pct_inactive_last_insider,
+    CAST(100.0 * ic_stats.n_last_domestic
+        / NULLIF(SUM(CASE WHEN rs.researcher_status = 'No publications in analysis window' THEN 1 ELSE 0 END), 0)
+        AS DECIMAL(6,1))  AS pct_inactive_last_domestic,
+    CAST(100.0 * ic_stats.n_last_abroad
+        / NULLIF(SUM(CASE WHEN rs.researcher_status = 'No publications in analysis window' THEN 1 ELSE 0 END), 0)
+        AS DECIMAL(6,1))  AS pct_inactive_last_abroad,
+    CAST(100.0 * ic_stats.n_last_outside_lr
+        / NULLIF(SUM(CASE WHEN rs.researcher_status = 'No publications in analysis window' THEN 1 ELSE 0 END), 0)
+        AS DECIMAL(6,1))  AS pct_inactive_last_outside_lr,
+    CAST(100.0 * ic_stats.n_no_pubs_after_origin
+        / NULLIF(SUM(CASE WHEN rs.researcher_status = 'No publications in analysis window' THEN 1 ELSE 0 END), 0)
+        AS DECIMAL(6,1))  AS pct_inactive_no_pubs_after_origin
+
+FROM #origin_totals ot
 LEFT JOIN #country_mapping cm
-    ON sc.country_code = cm.iso_a3
-LEFT JOIN #origin_totals ot
-    ON sc.country_code = ot.origin_country
-LEFT JOIN #inactive_classification ic
-    ON sc.country_code = ic.origin_country
+    ON ot.origin_country = cm.iso_a3
+LEFT JOIN #origin_researchers_any orec
+    ON orec.origin_country = ot.origin_country
+LEFT JOIN #researcher_status rs
+    ON rs.researcher_id = orec.researcher_id
+LEFT JOIN #forward_country_stats fcs
+    ON ot.origin_country = fcs.country_code
+LEFT JOIN #returnee_country_stats rcs
+    ON ot.origin_country = rcs.country_code
+LEFT JOIN (
+    SELECT
+        origin_country,
+        SUM(CASE WHEN last_observed_status = 'Last observed as insider'             THEN 1 ELSE 0 END) AS n_last_insider,
+        SUM(CASE WHEN last_observed_status = 'Last observed as domestic outsider'   THEN 1 ELSE 0 END) AS n_last_domestic,
+        SUM(CASE WHEN last_observed_status = 'Last observed abroad'                 THEN 1 ELSE 0 END) AS n_last_abroad,
+        SUM(CASE WHEN last_observed_status = 'Last observed outside Leiden Ranking' THEN 1 ELSE 0 END) AS n_last_outside_lr,
+        SUM(CASE WHEN last_observed_status = 'No publications after origin window'  THEN 1 ELSE 0 END) AS n_no_pubs_after_origin
+    FROM #inactive_classification
+    GROUP BY origin_country
+) ic_stats
+    ON ot.origin_country = ic_stats.origin_country
 GROUP BY
-    sc.country_code,
+    ot.origin_country,
     cm.country_name,
-    ot.n_origin_total
-ORDER BY
-    n_inactive_researchers DESC;
+    ot.n_origin_total,
+    fcs.pct_insiders_forward,
+    rcs.pct_returnees,
+    ic_stats.n_last_insider,
+    ic_stats.n_last_domestic,
+    ic_stats.n_last_abroad,
+    ic_stats.n_last_outside_lr,
+    ic_stats.n_no_pubs_after_origin
+HAVING ot.n_origin_total > 5000
+ORDER BY ot.n_origin_total DESC;
 
 
--- 7.6.6 OUTPUT: Detailed breakdown showing year ranges
+-- ============================================
+-- SECTION 6: BACKWARD-LOOKING ANALYSIS
+-- Destination perspective: where did destination-window researchers come from?
+-- ============================================
+
+-- 6.1 Backward mobility: university-level table (destination perspective)
+IF OBJECT_ID('tempdb..#backward_university_table', 'U') IS NOT NULL
+    DROP TABLE #backward_university_table;
+
+SELECT
+    bm.dest_ror_id                                          AS university_ror_id,
+    COALESCE(r.lr_university_name, bm.dest_university)      AS university_name,
+    cm.iso_a3                                               AS iso_a3_country_code,
+    CAST(r.latitude  AS FLOAT)                              AS latitude,
+    CAST(r.longitude AS FLOAT)                              AS longitude,
+    COUNT(DISTINCT bm.researcher_id)                        AS n_researchers,
+    SUM(CASE WHEN bm.status = 'Insider' THEN 1 ELSE 0 END)  AS n_insiders,
+    CAST(
+        100.0 * SUM(CASE WHEN bm.status = 'Insider' THEN 1 ELSE 0 END)
+        / NULLIF(COUNT(DISTINCT bm.researcher_id), 0)
+        AS DECIMAL(6,2)
+    ) AS pct_insiders
+INTO #backward_university_table
+FROM #backward_mobility bm
+LEFT JOIN #lr_unis r          ON bm.dest_ror_id        = r.ror_id
+LEFT JOIN #country_mapping cm ON r.lr_country_code     = cm.iso_a2
+GROUP BY
+    bm.dest_ror_id,
+    COALESCE(r.lr_university_name, bm.dest_university),
+    cm.iso_a3,
+    r.latitude,
+    r.longitude;
+
+CREATE INDEX ix_backward_university_table
+    ON #backward_university_table (iso_a3_country_code, n_researchers);
+
+
+-- 6.2 Backward country stats (intermediate aggregate — used in Section 6.7 and 7)
+IF OBJECT_ID('tempdb..#backward_country_stats', 'U') IS NOT NULL
+    DROP TABLE #backward_country_stats;
+
+SELECT
+    iso_a3_country_code                                                AS country_code,
+    SUM(n_researchers)                                                 AS total_researchers_dest,
+    SUM(n_insiders)                                                    AS total_insiders_backward,
+    CAST(100.0 * SUM(n_insiders) / NULLIF(SUM(n_researchers), 0) AS DECIMAL(6,2))
+                                                                       AS pct_insiders_backward
+INTO #backward_country_stats
+FROM #backward_university_table
+GROUP BY iso_a3_country_code;
+
+CREATE INDEX ix_backward_country_stats ON #backward_country_stats (country_code);
+
+
+-- 6.3 Box-plot data: insider rate distribution by region and country
+
+IF OBJECT_ID('tempdb..#boxplot_region_annotated', 'U') IS NOT NULL DROP TABLE #boxplot_region_annotated;
+IF OBJECT_ID('tempdb..#boxplot_points_region',    'U') IS NOT NULL DROP TABLE #boxplot_points_region;
+IF OBJECT_ID('tempdb..#boxplot_stats_region',     'U') IS NOT NULL DROP TABLE #boxplot_stats_region;
+IF OBJECT_ID('tempdb..#boxplot_points_country',   'U') IS NOT NULL DROP TABLE #boxplot_points_country;
+
+;WITH base AS (
+    SELECT
+        u.university_ror_id,
+        u.university_name,
+        u.iso_a3_country_code,
+        cm.country_name,
+        rm.region_name,
+        CAST(u.pct_insiders AS FLOAT) AS value_pct_insiders
+    FROM #backward_university_table u
+    LEFT JOIN #country_mapping cm ON cm.iso_a3       = u.iso_a3_country_code
+    LEFT JOIN #region_map rm      ON rm.country_name = cm.country_name
+    WHERE u.pct_insiders IS NOT NULL
+      AND u.iso_a3_country_code IS NOT NULL
+      AND rm.region_name IS NOT NULL
+),
+q AS (
+    SELECT
+        b.*,
+        PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY value_pct_insiders) OVER (PARTITION BY region_name) AS q1,
+        PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY value_pct_insiders) OVER (PARTITION BY region_name) AS median,
+        PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY value_pct_insiders) OVER (PARTITION BY region_name) AS q3
+    FROM base b
+),
+fences AS (
+    SELECT q.*, (q1 - 1.5*(q3-q1)) AS lower_fence, (q3 + 1.5*(q3-q1)) AS upper_fence FROM q
+),
+annotated AS (
+    SELECT
+        f.*,
+        MIN(CASE WHEN f.value_pct_insiders >= f.lower_fence THEN f.value_pct_insiders END)
+            OVER (PARTITION BY f.region_name) AS whisker_low,
+        MAX(CASE WHEN f.value_pct_insiders <= f.upper_fence THEN f.value_pct_insiders END)
+            OVER (PARTITION BY f.region_name) AS whisker_high,
+        COUNT(*) OVER (PARTITION BY f.region_name) AS n_universities
+    FROM fences f
+)
+SELECT * INTO #boxplot_region_annotated FROM annotated;
+
+SELECT region_name, university_ror_id, university_name, iso_a3_country_code, value_pct_insiders
+INTO #boxplot_points_region FROM #boxplot_region_annotated;
+
+SELECT DISTINCT region_name, n_universities, q1, median, q3, whisker_low, whisker_high
+INTO #boxplot_stats_region  FROM #boxplot_region_annotated;
+
+SELECT iso_a3_country_code, university_ror_id, university_name, value_pct_insiders
+INTO #boxplot_points_country FROM #boxplot_region_annotated;
+
+CREATE INDEX ix_boxplot_points_region  ON #boxplot_points_region  (region_name);
+CREATE INDEX ix_boxplot_stats_region   ON #boxplot_stats_region   (region_name);
+CREATE INDEX ix_boxplot_points_country ON #boxplot_points_country (iso_a3_country_code);
+
+-- Output: box-plot geometry by region
+SELECT region_name, n_universities, q1, median, q3, whisker_low, whisker_high
+FROM #boxplot_stats_region
+ORDER BY region_name;
+
+-- Output: individual university points by region (with outlier flag)
+SELECT
+    p.region_name,
+    p.university_ror_id,
+    p.university_name,
+    p.iso_a3_country_code,
+    p.value_pct_insiders,
+    CASE WHEN p.value_pct_insiders < s.whisker_low
+          OR p.value_pct_insiders > s.whisker_high
+         THEN 1 ELSE 0 END AS is_outlier
+FROM #boxplot_points_region p
+JOIN #boxplot_stats_region s ON s.region_name = p.region_name
+ORDER BY p.region_name, p.value_pct_insiders;
+
+-- Output: box-plot geometry by country
+;WITH country_stats AS (
+    SELECT DISTINCT
+        iso_a3_country_code,
+        COUNT(*) OVER (PARTITION BY iso_a3_country_code)                                                          AS n_universities,
+        PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY value_pct_insiders) OVER (PARTITION BY iso_a3_country_code) AS q1,
+        PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY value_pct_insiders) OVER (PARTITION BY iso_a3_country_code) AS median,
+        PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY value_pct_insiders) OVER (PARTITION BY iso_a3_country_code) AS q3,
+        value_pct_insiders
+    FROM #boxplot_region_annotated
+),
+country_whiskers AS (
+    SELECT cs.*, (q1 - 1.5*(q3-q1)) AS lower_fence, (q3 + 1.5*(q3-q1)) AS upper_fence FROM country_stats cs
+)
+SELECT DISTINCT
+    cw.iso_a3_country_code,
+    cm.country_name,
+    cw.n_universities,
+    cw.q1, cw.median, cw.q3,
+    MIN(CASE WHEN cw.value_pct_insiders >= cw.lower_fence THEN cw.value_pct_insiders END)
+        OVER (PARTITION BY cw.iso_a3_country_code) AS whisker_low,
+    MAX(CASE WHEN cw.value_pct_insiders <= cw.upper_fence THEN cw.value_pct_insiders END)
+        OVER (PARTITION BY cw.iso_a3_country_code) AS whisker_high
+FROM country_whiskers cw
+LEFT JOIN #country_mapping cm ON cw.iso_a3_country_code = cm.iso_a3
+ORDER BY n_universities DESC;
+
+-- Output: individual university points by country (with outlier flag)
+;WITH country_stats AS (
+    SELECT DISTINCT
+        iso_a3_country_code,
+        COUNT(*) OVER (PARTITION BY iso_a3_country_code)                                                          AS n_universities,
+        PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY value_pct_insiders) OVER (PARTITION BY iso_a3_country_code) AS q1,
+        PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY value_pct_insiders) OVER (PARTITION BY iso_a3_country_code) AS median,
+        PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY value_pct_insiders) OVER (PARTITION BY iso_a3_country_code) AS q3,
+        value_pct_insiders
+    FROM #boxplot_region_annotated
+),
+country_whiskers AS (
+    SELECT cs.*, (q1 - 1.5*(q3-q1)) AS lower_fence, (q3 + 1.5*(q3-q1)) AS upper_fence FROM country_stats cs
+),
+country_with_whiskers AS (
+    SELECT DISTINCT
+        cw.iso_a3_country_code, cw.n_universities, cw.median,
+        MIN(CASE WHEN cw.value_pct_insiders >= cw.lower_fence THEN cw.value_pct_insiders END)
+            OVER (PARTITION BY cw.iso_a3_country_code) AS whisker_low,
+        MAX(CASE WHEN cw.value_pct_insiders <= cw.upper_fence THEN cw.value_pct_insiders END)
+            OVER (PARTITION BY cw.iso_a3_country_code) AS whisker_high
+    FROM country_whiskers cw
+)
+SELECT
+    p.iso_a3_country_code,
+    cm.country_name,
+    p.university_ror_id,
+    p.university_name,
+    p.value_pct_insiders,
+    s.n_universities,
+    s.median,
+    CASE WHEN p.value_pct_insiders < s.whisker_low
+          OR p.value_pct_insiders > s.whisker_high
+         THEN 1 ELSE 0 END AS is_outlier
+FROM #boxplot_points_country p
+JOIN country_with_whiskers s ON s.iso_a3_country_code = p.iso_a3_country_code
+LEFT JOIN #country_mapping cm ON p.iso_a3_country_code = cm.iso_a3
+ORDER BY s.n_universities DESC, p.iso_a3_country_code, p.value_pct_insiders;
+
+
+-- 6.4 Country-to-country flow tables (intermediate — used in Section 6.8 and 7)
+--     #backward_country_flows: destination -> origin pairs
+--     #country_flows_lr:       origin -> destination pairs  
+--     #backward_mobility_matrix: adds destination totals and % shares
+
+IF OBJECT_ID('tempdb..#backward_country_flows', 'U') IS NOT NULL
+    DROP TABLE #backward_country_flows;
+
+SELECT
+    ly.country_code              AS destination_country,
+    fy.country_code              AS origin_country,
+    COUNT(DISTINCT fy.researcher_id) AS n_researchers
+INTO #backward_country_flows
+FROM #last_year_LR ly
+INNER JOIN #first_year_LR fy ON ly.researcher_id = fy.researcher_id
+WHERE ly.country_code IS NOT NULL AND fy.country_code IS NOT NULL
+GROUP BY ly.country_code, fy.country_code;
+
+CREATE INDEX ix_backward_country_flows ON #backward_country_flows (destination_country, origin_country);
+
+IF OBJECT_ID('tempdb..#country_flows_lr', 'U') IS NOT NULL
+    DROP TABLE #country_flows_lr;
+
+SELECT
+    fy.country_code              AS origin_country,
+    ly.country_code              AS destination_country,
+    COUNT(DISTINCT fy.researcher_id) AS n_researchers
+INTO #country_flows_lr
+FROM #first_year_LR fy
+INNER JOIN #last_year_LR ly ON fy.researcher_id = ly.researcher_id
+WHERE fy.country_code IS NOT NULL AND ly.country_code IS NOT NULL
+GROUP BY fy.country_code, ly.country_code;
+
+CREATE INDEX ix_country_flows_lr ON #country_flows_lr (origin_country, destination_country, n_researchers);
+
+IF OBJECT_ID('tempdb..#backward_mobility_matrix', 'U') IS NOT NULL
+    DROP TABLE #backward_mobility_matrix;
+
+SELECT
+    b.destination_country,
+    dc.country_name              AS destination_country_name,
+    b.origin_country,
+    oc.country_name              AS origin_country_name,
+    b.n_researchers,
+    d.n_destination_active,
+    CAST(100.0 * b.n_researchers / NULLIF(d.n_destination_active, 0) AS DECIMAL(6,2))
+                                 AS pct_of_destination_active
+INTO #backward_mobility_matrix
+FROM #backward_country_flows b
+JOIN #destination_lr_active d   ON b.destination_country = d.destination_country
+LEFT JOIN #country_mapping dc   ON b.destination_country = dc.iso_a3
+LEFT JOIN #country_mapping oc   ON b.origin_country      = oc.iso_a3;
+
+
+-- 6.5 TABLE 2: Backward/destination country summary
+--     Denominator: researchers active at LR in the destination window
+--     Coverage: all countries with Leiden Ranking universities
+
+SELECT
+    b.country_code,
+    cm.country_name,
+
+    -- Denominator
+    b.total_researchers_dest                                           AS n_destination_active,
+
+    -- Insider share (backward perspective)
+    b.total_insiders_backward                                          AS n_insiders,
+    b.pct_insiders_backward,
+
+    -- Returnee share
+    ISNULL(r.n_returnees, 0)                                           AS n_returnees,
+    ISNULL(r.pct_returnees, 0.0)                                       AS pct_returnees,
+
+    -- Pure vs mobile inbreeding decomposition
+    CAST(b.pct_insiders_backward - ISNULL(r.pct_returnees, 0.0) AS DECIMAL(6,2))
+                                                                       AS est_pure_inbreeding_pct,
+    ISNULL(r.pct_returnees, 0.0)                                       AS mobile_inbreeding_pct,
+
+    -- Forward perspective (for cross-comparison)
+    f.pct_insiders_forward,
+    f.total_researchers_origin                                         AS n_origin_total_forward_view,
+
+    -- Mobility Balance Index
+    CAST(b.pct_insiders_backward - ISNULL(f.pct_insiders_forward, 0) AS DECIMAL(6,2))
+                                                                       AS mobility_balance_index,
+
+    -- System type classification
+    CASE
+        WHEN b.pct_insiders_backward < 40
+         AND ISNULL(f.pct_insiders_forward, 0) > 50                    THEN 'Type A: Net Attractor'
+        WHEN b.pct_insiders_backward > 60
+         AND ISNULL(f.pct_insiders_forward, 0) < 40                    THEN 'Type B: Training Exporter'
+        WHEN b.pct_insiders_backward BETWEEN 40 AND 60
+         AND ISNULL(f.pct_insiders_forward, 0) BETWEEN 40 AND 60
+         AND ISNULL(r.pct_returnees, 0) > 7                            THEN 'Type C: Circulation Hub'
+        WHEN b.pct_insiders_backward > 60
+         AND ISNULL(f.pct_insiders_forward, 0) > 60
+         AND ISNULL(r.pct_returnees, 0) < 2                            THEN 'Type D: Closed System'
+        ELSE                                                                 'Mixed/Transitional'
+    END AS system_type,
+
+    -- MBI interpretation
+    CASE
+        WHEN (b.pct_insiders_backward - ISNULL(f.pct_insiders_forward, 0)) > 20  THEN 'High asymmetry: Exports talent'
+        WHEN (b.pct_insiders_backward - ISNULL(f.pct_insiders_forward, 0)) < -10 THEN 'Negative asymmetry: Net attractor'
+        ELSE                                                                            'Relatively symmetric'
+    END AS mbi_interpretation
+
+FROM #backward_country_stats b
+LEFT JOIN #forward_country_stats f   ON b.country_code = f.country_code
+LEFT JOIN #returnee_country_stats r  ON b.country_code = r.country_code
+LEFT JOIN #country_mapping cm        ON b.country_code = cm.iso_a3
+ORDER BY b.total_researchers_dest DESC;
+
+
+-- ============================================
+-- SECTION 7: SELECTED-COUNTRY DEEP DIVE
+-- Detailed flow analysis for 12 focal countries
+-- ============================================
+
+-- 7.1 Define focal countries
+IF OBJECT_ID('tempdb..#selected_countries', 'U') IS NOT NULL
+    DROP TABLE #selected_countries;
+
+CREATE TABLE #selected_countries (country_code CHAR(3) PRIMARY KEY);
+
+INSERT INTO #selected_countries (country_code) VALUES
+('USA'), ('CHN'), ('IND'), ('GBR'), ('DEU'), ('EGY'),
+('ESP'), ('ARE'), ('BRA'), ('RUS'), ('JPN'), ('KOR');
+
+
+-- 7.2 Inbound flows: top 6 origin countries for each focal destination
+
+;WITH inbound_ranked AS (
+    SELECT
+        b.destination_country                                   AS focal_country,
+        b.origin_country                                        AS source_country,
+        COALESCE(cm.country_name, b.origin_country)             AS source_country_name,
+        b.n_researchers,
+        d.n_destination_active,
+        ROW_NUMBER() OVER (
+            PARTITION BY b.destination_country
+            ORDER BY b.n_researchers DESC
+        ) AS rn
+    FROM #backward_mobility_matrix b
+    LEFT JOIN #country_mapping cm  ON b.origin_country      = cm.iso_a3
+    JOIN #destination_lr_active d  ON b.destination_country = d.destination_country
+    WHERE b.destination_country IN (SELECT country_code FROM #selected_countries)
+)
+SELECT
+    ir.focal_country                                            AS destination_country_code,
+    cmf.country_name                                            AS destination_country_name,
+    ir.source_country                                           AS origin_country_code,
+    ir.source_country_name                                      AS origin_country_name,
+    ir.n_researchers,
+    ir.n_destination_active,
+    CAST(100.0 * ir.n_researchers / NULLIF(ir.n_destination_active, 0) AS DECIMAL(6,2))
+                                                                AS pct_of_destination_total
+FROM inbound_ranked ir
+LEFT JOIN #country_mapping cmf ON ir.focal_country = cmf.iso_a3
+WHERE ir.rn <= 6
+ORDER BY ir.focal_country, ir.rn;
+
+
+-- 7.3 Outbound flows: top 6 destination countries for each focal origin
+
+;WITH outbound_ranked AS (
+    SELECT
+        cf.origin_country                                       AS focal_country,
+        cf.destination_country                                  AS dest_country,
+        COALESCE(cm.country_name, cf.destination_country)       AS dest_country_name,
+        cf.n_researchers,
+        ot.n_origin_total,
+        ROW_NUMBER() OVER (
+            PARTITION BY cf.origin_country
+            ORDER BY cf.n_researchers DESC
+        ) AS rn
+    FROM #country_flows_lr cf
+    LEFT JOIN #country_mapping cm ON cf.destination_country = cm.iso_a3
+    LEFT JOIN #origin_totals ot   ON cf.origin_country      = ot.origin_country
+    WHERE cf.origin_country IN (SELECT country_code FROM #selected_countries)
+)
+SELECT
+    orr.focal_country                                           AS origin_country_code,
+    cmo.country_name                                            AS origin_country_name,
+    orr.dest_country                                            AS destination_country_code,
+    orr.dest_country_name                                       AS destination_country_name,
+    orr.n_researchers,
+    orr.n_origin_total,
+    CAST(100.0 * orr.n_researchers / NULLIF(orr.n_origin_total, 0) AS DECIMAL(6,2))
+                                                                AS pct_of_origin_total
+FROM outbound_ranked orr
+LEFT JOIN #country_mapping cmo ON orr.focal_country = cmo.iso_a3
+WHERE orr.rn <= 6
+ORDER BY orr.focal_country, orr.rn;
+
+
+-- 7.4 Full forward-looking origin outcomes for focal countries
+--     (top 6 destinations + residual status rows in one combined output)
+
+;WITH outbound_ranked AS (
+    SELECT
+        cf.origin_country                                       AS focal_country,
+        cf.destination_country                                  AS dest_country,
+        COALESCE(cm.country_name, cf.destination_country)       AS dest_country_name,
+        cf.n_researchers,
+        ot.n_origin_total,
+        ROW_NUMBER() OVER (
+            PARTITION BY cf.origin_country
+            ORDER BY cf.n_researchers DESC
+        ) AS rn
+    FROM #country_flows_lr cf
+    LEFT JOIN #country_mapping cm ON cf.destination_country = cm.iso_a3
+    LEFT JOIN #origin_totals ot   ON cf.origin_country      = ot.origin_country
+    WHERE cf.origin_country IN (SELECT country_code FROM #selected_countries)
+),
+dest_rows AS (
+    SELECT
+        orr.focal_country                                       AS origin_country_code,
+        cmo.country_name                                        AS origin_country_name,
+        orr.dest_country                                        AS destination_country_code,
+        orr.dest_country_name                                   AS destination_country_name,
+        orr.n_researchers,
+        orr.n_origin_total,
+        CAST(100.0 * orr.n_researchers / NULLIF(orr.n_origin_total, 0) AS DECIMAL(6,2))
+                                                                AS pct_of_origin_total,
+        orr.rn                                                  AS display_order
+    FROM outbound_ranked orr
+    LEFT JOIN #country_mapping cmo ON orr.focal_country = cmo.iso_a3
+    WHERE orr.rn <= 6
+),
+status_rows AS (
+    SELECT
+        fm.origin_country                                       AS origin_country_code,
+        cm_orig.country_name                                    AS origin_country_name,
+        NULL                                                    AS destination_country_code,
+        fm.status                                               AS status_label,
+        COUNT(DISTINCT fm.researcher_id)                        AS n_researchers,
+        ot.n_origin_total,
+        CAST(100.0 * COUNT(DISTINCT fm.researcher_id) / NULLIF(ot.n_origin_total, 0) AS DECIMAL(6,2))
+                                                                AS pct_of_origin_total,
+        CASE
+            WHEN fm.status = 'Outside LR / missing affiliation'    THEN 99
+            WHEN fm.status = 'No publications in analysis window'   THEN 100
+            ELSE 101
+        END AS display_order
+    FROM #forward_mobility fm
+    LEFT JOIN #origin_totals ot     ON fm.origin_country = ot.origin_country
+    LEFT JOIN #country_mapping cm_orig ON fm.origin_country = cm_orig.iso_a3
+    WHERE fm.origin_country IN (SELECT country_code FROM #selected_countries)
+      AND fm.status IN ('Outside LR / missing affiliation', 'No publications in analysis window')
+    GROUP BY fm.origin_country, fm.status, ot.n_origin_total, cm_orig.country_name
+)
+SELECT
+    origin_country_code,
+    origin_country_name,
+    destination_country_code,
+    destination_country_name,
+    n_researchers,
+    n_origin_total,
+    pct_of_origin_total,
+    display_order
+FROM dest_rows
+
+UNION ALL
+
+SELECT
+    origin_country_code,
+    origin_country_name,
+    destination_country_code,
+    CASE
+        WHEN status_label = 'Outside LR / missing affiliation'  THEN 'Active outside Leiden Ranking'
+        WHEN status_label = 'No publications in analysis window' THEN 'No publications in analysis window'
+        ELSE status_label
+    END,
+    n_researchers,
+    n_origin_total,
+    pct_of_origin_total,
+    display_order
+FROM status_rows
+
+ORDER BY origin_country_name, display_order, destination_country_name;
+
+
+-- 7.5 Inactive researcher detail: last observed location and timing
+--     (focal countries only; year-range diagnostic)
+
 SELECT
     ic.origin_country,
     cm.country_name,
     ic.last_observed_status,
-    COUNT(*) AS n_researchers,
-    MIN(ic.last_observed_year) AS earliest_last_pub,
-    MAX(ic.last_observed_year) AS latest_last_pub,
-    AVG(CAST(ic.last_observed_year AS FLOAT)) AS avg_last_pub_year
+    COUNT(*)                                                    AS n_researchers,
+    MIN(ic.last_observed_year)                                  AS earliest_last_pub,
+    MAX(ic.last_observed_year)                                  AS latest_last_pub,
+    CAST(ROUND(AVG(CAST(ic.last_observed_year AS FLOAT)), 0) AS INT)
+                                                                AS avg_last_pub_year
 FROM #inactive_classification ic
-LEFT JOIN #country_mapping cm
-    ON ic.origin_country = cm.iso_a3
+LEFT JOIN #country_mapping cm ON ic.origin_country = cm.iso_a3
 WHERE ic.origin_country IN (SELECT country_code FROM #selected_countries)
-GROUP BY
-    ic.origin_country,
-    cm.country_name,
-    ic.last_observed_status
-ORDER BY
-    ic.origin_country,
-    n_researchers DESC;
+GROUP BY ic.origin_country, cm.country_name, ic.last_observed_status
+ORDER BY ic.origin_country, n_researchers DESC;
 
 -- End of script
-
