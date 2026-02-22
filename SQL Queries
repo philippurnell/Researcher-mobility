@@ -195,7 +195,7 @@ LEFT JOIN #country_mapping cm
 CREATE INDEX ix_first_year_lr ON #first_year_LR (ror_id, country_code, researcher_id);
 
 
--- 2.3 Single canonical origin record per researcher
+-- 2.3 Single origin record per researcher
 --     (earliest year, then ror_id, then country as tiebreakers)
 IF OBJECT_ID('tempdb..#origin_one', 'U') IS NOT NULL
     DROP TABLE #origin_one;
@@ -599,7 +599,7 @@ FROM #forward_university_table
 ORDER BY n_researchers DESC;
 
 
--- 5.4 Forward country stats (intermediate aggregate — used in Sections 5.5 and 7)
+-- 5.4 Forward country stats 
 IF OBJECT_ID('tempdb..#forward_country_stats', 'U') IS NOT NULL
     DROP TABLE #forward_country_stats;
 
@@ -682,7 +682,7 @@ CREATE INDEX ix_backward_mobility
     ON #backward_mobility (dest_country, dest_ror_id, status, researcher_id);
 
 
-	-- 5.7 Returnee stats (intermediate aggregate — used in Sections 5.5 and 7)
+	-- 5.7 Returnee stats
 IF OBJECT_ID('tempdb..#returnee_country_stats', 'U') IS NOT NULL
     DROP TABLE #returnee_country_stats;
 
@@ -698,74 +698,77 @@ GROUP BY dest_country;
 
 CREATE INDEX ix_returnee_country_stats ON #returnee_country_stats (country_code);
 
--- 5.8 TABLE 1: Forward/origin country summary
---     Denominator: all researchers with any first-window LR affiliation
---     Filter: countries with > 5000 researchers
+-- 5.8 TABLE B: Forward/origin country summary
 
 SELECT
     ot.origin_country                                                  AS country_code,
     cm.country_name,
+
+    -- Anchor size metric (destination-side, for ordering / filtering consistency)
+    ISNULL(dla.n_destination_active, 0)                                AS n_destination_active,
+
+    -- Origin cohort size (first-window LR affiliation; denominator for forward outcomes)
     ot.n_origin_total,
 
-    -- High-level destination-window outcomes
-    SUM(CASE WHEN rs.researcher_status = 'Observed at LR in destination window' THEN 1 ELSE 0 END)
-        AS n_observed_at_lr_dest,
-    CAST(100.0 * SUM(CASE WHEN rs.researcher_status = 'Observed at LR in destination window' THEN 1 ELSE 0 END)
-        / NULLIF(ot.n_origin_total, 0) AS DECIMAL(6,2))
-        AS pct_observed_at_lr_dest,
+    -- Forward outcome counts (origin cohort outcomes observed in destination window)
+    SUM(CASE WHEN fm.status = 'Insider' THEN 1 ELSE 0 END)              AS n_insiders_forward,
+    CAST(
+        100.0 * SUM(CASE WHEN fm.status = 'Insider' THEN 1 ELSE 0 END)
+        / NULLIF(ot.n_origin_total, 0) AS DECIMAL(6,2)
+    ) AS pct_insiders_forward,
 
-    SUM(CASE WHEN rs.researcher_status = 'Active outside Leiden Ranking' THEN 1 ELSE 0 END)
-        AS n_active_outside_lr,
-    CAST(100.0 * SUM(CASE WHEN rs.researcher_status = 'Active outside Leiden Ranking' THEN 1 ELSE 0 END)
-        / NULLIF(ot.n_origin_total, 0) AS DECIMAL(6,2))
-        AS pct_active_outside_lr,
+    SUM(CASE WHEN fm.status = 'Domestic outsider' THEN 1 ELSE 0 END)    AS n_domestic_outsider_forward,
+    CAST(
+        100.0 * SUM(CASE WHEN fm.status = 'Domestic outsider' THEN 1 ELSE 0 END)
+        / NULLIF(ot.n_origin_total, 0) AS DECIMAL(6,2)
+    ) AS pct_domestic_outsider_forward,
 
-    SUM(CASE WHEN rs.researcher_status = 'No publications in analysis window' THEN 1 ELSE 0 END)
-        AS n_inactive,
-    CAST(100.0 * SUM(CASE WHEN rs.researcher_status = 'No publications in analysis window' THEN 1 ELSE 0 END)
-        / NULLIF(ot.n_origin_total, 0) AS DECIMAL(6,2))
-        AS pct_inactive,
+    SUM(CASE WHEN fm.status = 'Foreign outsider' THEN 1 ELSE 0 END)     AS n_foreign_outsider_forward,
+    CAST(
+        100.0 * SUM(CASE WHEN fm.status = 'Foreign outsider' THEN 1 ELSE 0 END)
+        / NULLIF(ot.n_origin_total, 0) AS DECIMAL(6,2)
+    ) AS pct_foreign_outsider_forward,
 
-    -- Forward insider and returnee shares
-    --   (of those observed at LR in destination window)
-    fcs.pct_insiders_forward,
-    ISNULL(rcs.pct_returnees, 0.0)                                     AS pct_returnees_forward,
+    SUM(CASE WHEN fm.status = 'Outside LR / missing affiliation' THEN 1 ELSE 0 END) AS n_outside_lr_forward,
+    CAST(
+        100.0 * SUM(CASE WHEN fm.status = 'Outside LR / missing affiliation' THEN 1 ELSE 0 END)
+        / NULLIF(ot.n_origin_total, 0) AS DECIMAL(6,2)
+    ) AS pct_outside_lr_forward,
 
-    -- Inactive sub-group: last observed location (counts)
+    SUM(CASE WHEN fm.status = 'No publications in analysis window' THEN 1 ELSE 0 END) AS n_no_pubs,
+    CAST(
+        100.0 * SUM(CASE WHEN fm.status = 'No publications in analysis window' THEN 1 ELSE 0 END)
+        / NULLIF(ot.n_origin_total, 0) AS DECIMAL(6,2)
+    ) AS pct_no_publications,
+
+    -- Optional: keep returnee / forward summary columns for diagnostics
+    ISNULL(fcs.pct_insiders_forward, 0.0)                               AS pct_insiders_forward_summary,
+    ISNULL(rcs.pct_returnees, 0.0)                                      AS pct_returnees_forward,
+
+    -- Inactive sub-group: last observed location (counts) — useful diagnostics
     ic_stats.n_last_insider,
     ic_stats.n_last_domestic,
     ic_stats.n_last_abroad,
     ic_stats.n_last_outside_lr,
-    ic_stats.n_no_pubs_after_origin,
-
-    -- Inactive sub-group: last observed location (% of inactive)
-    CAST(100.0 * ic_stats.n_last_insider
-        / NULLIF(SUM(CASE WHEN rs.researcher_status = 'No publications in analysis window' THEN 1 ELSE 0 END), 0)
-        AS DECIMAL(6,1))  AS pct_inactive_last_insider,
-    CAST(100.0 * ic_stats.n_last_domestic
-        / NULLIF(SUM(CASE WHEN rs.researcher_status = 'No publications in analysis window' THEN 1 ELSE 0 END), 0)
-        AS DECIMAL(6,1))  AS pct_inactive_last_domestic,
-    CAST(100.0 * ic_stats.n_last_abroad
-        / NULLIF(SUM(CASE WHEN rs.researcher_status = 'No publications in analysis window' THEN 1 ELSE 0 END), 0)
-        AS DECIMAL(6,1))  AS pct_inactive_last_abroad,
-    CAST(100.0 * ic_stats.n_last_outside_lr
-        / NULLIF(SUM(CASE WHEN rs.researcher_status = 'No publications in analysis window' THEN 1 ELSE 0 END), 0)
-        AS DECIMAL(6,1))  AS pct_inactive_last_outside_lr,
-    CAST(100.0 * ic_stats.n_no_pubs_after_origin
-        / NULLIF(SUM(CASE WHEN rs.researcher_status = 'No publications in analysis window' THEN 1 ELSE 0 END), 0)
-        AS DECIMAL(6,1))  AS pct_inactive_no_pubs_after_origin
+    ic_stats.n_no_pubs_after_origin
 
 FROM #origin_totals ot
 LEFT JOIN #country_mapping cm
     ON ot.origin_country = cm.iso_a3
-LEFT JOIN #origin_researchers_any orec
-    ON orec.origin_country = ot.origin_country
-LEFT JOIN #researcher_status rs
-    ON rs.researcher_id = orec.researcher_id
+
+-- researcher-level forward outcomes (one row per origin-researcher from origin cohort)
+LEFT JOIN #forward_mobility fm
+    ON fm.origin_country = ot.origin_country
+
 LEFT JOIN #forward_country_stats fcs
     ON ot.origin_country = fcs.country_code
 LEFT JOIN #returnee_country_stats rcs
     ON ot.origin_country = rcs.country_code
+
+-- destination anchor for ordering/filters
+LEFT JOIN #destination_lr_active dla
+    ON ot.origin_country = dla.destination_country
+
 LEFT JOIN (
     SELECT
         origin_country,
@@ -778,20 +781,26 @@ LEFT JOIN (
     GROUP BY origin_country
 ) ic_stats
     ON ot.origin_country = ic_stats.origin_country
+
 GROUP BY
     ot.origin_country,
     cm.country_name,
     ot.n_origin_total,
-    fcs.pct_insiders_forward,
-    rcs.pct_returnees,
+    ISNULL(dla.n_destination_active, 0),
+    ISNULL(fcs.pct_insiders_forward, 0.0),
+    ISNULL(rcs.pct_returnees, 0.0),
     ic_stats.n_last_insider,
     ic_stats.n_last_domestic,
     ic_stats.n_last_abroad,
     ic_stats.n_last_outside_lr,
     ic_stats.n_no_pubs_after_origin
-HAVING ot.n_origin_total > 5000
-ORDER BY ot.n_origin_total DESC;
 
+-- Filter by destination-side workforce size 
+HAVING ISNULL(dla.n_destination_active, 0) >= 5000
+
+ORDER BY
+    ISNULL(dla.n_destination_active, 0) DESC,
+    ot.n_origin_total DESC;
 
 -- ============================================
 -- SECTION 6: BACKWARD-LOOKING ANALYSIS
@@ -830,7 +839,7 @@ CREATE INDEX ix_backward_university_table
     ON #backward_university_table (iso_a3_country_code, n_researchers);
 
 
--- 6.2 Backward country stats (intermediate aggregate — used in Section 6.7 and 7)
+-- 6.2 Backward country stats 
 IF OBJECT_ID('tempdb..#backward_country_stats', 'U') IS NOT NULL
     DROP TABLE #backward_country_stats;
 
@@ -848,7 +857,6 @@ CREATE INDEX ix_backward_country_stats ON #backward_country_stats (country_code)
 
 
 -- 6.3 Box-plot data: insider rate distribution by region and country
-
 IF OBJECT_ID('tempdb..#boxplot_region_annotated', 'U') IS NOT NULL DROP TABLE #boxplot_region_annotated;
 IF OBJECT_ID('tempdb..#boxplot_points_region',    'U') IS NOT NULL DROP TABLE #boxplot_points_region;
 IF OBJECT_ID('tempdb..#boxplot_stats_region',     'U') IS NOT NULL DROP TABLE #boxplot_stats_region;
@@ -991,10 +999,7 @@ LEFT JOIN #country_mapping cm ON p.iso_a3_country_code = cm.iso_a3
 ORDER BY s.n_universities DESC, p.iso_a3_country_code, p.value_pct_insiders;
 
 
--- 6.4 Country-to-country flow tables (intermediate — used in Section 6.8 and 7)
---     #backward_country_flows: destination -> origin pairs
---     #country_flows_lr:       origin -> destination pairs  
---     #backward_mobility_matrix: adds destination totals and % shares
+-- 6.4 Country-to-country flow tables
 
 IF OBJECT_ID('tempdb..#backward_country_flows', 'U') IS NOT NULL
     DROP TABLE #backward_country_flows;
@@ -1045,9 +1050,7 @@ LEFT JOIN #country_mapping dc   ON b.destination_country = dc.iso_a3
 LEFT JOIN #country_mapping oc   ON b.origin_country      = oc.iso_a3;
 
 
--- 6.5 TABLE 2: Backward/destination country summary
---     Denominator: researchers active at LR in the destination window
---     Coverage: all countries with Leiden Ranking universities
+-- 6.5 Backward/destination country summary
 
 SELECT
     b.country_code,
@@ -1069,40 +1072,86 @@ SELECT
                                                                        AS est_pure_inbreeding_pct,
     ISNULL(r.pct_returnees, 0.0)                                       AS mobile_inbreeding_pct,
 
-    -- Forward perspective (for cross-comparison)
-    f.pct_insiders_forward,
-    f.total_researchers_origin                                         AS n_origin_total_forward_view,
+    -- Forward perspective
+    ISNULL(f.pct_insiders_forward, 0)                                  AS pct_insiders_forward,
+    ISNULL(f.total_researchers_origin, 0)                              AS n_origin_total_forward_view,
 
-    -- Mobility Balance Index
+    -- Mobility Balance Index (MBI)
     CAST(b.pct_insiders_backward - ISNULL(f.pct_insiders_forward, 0) AS DECIMAL(6,2))
                                                                        AS mobility_balance_index,
 
-    -- System type classification
+    -- System type classification 
     CASE
-        WHEN b.pct_insiders_backward < 40
-         AND ISNULL(f.pct_insiders_forward, 0) > 50                    THEN 'Type A: Net Attractor'
+        WHEN b.pct_insiders_backward <= 40
+         AND ISNULL(f.pct_insiders_forward, 0) <= 12                    THEN 'Type A: Net Attractor'
+
         WHEN b.pct_insiders_backward > 60
-         AND ISNULL(f.pct_insiders_forward, 0) < 40                    THEN 'Type B: Training Exporter'
+         AND ISNULL(f.pct_insiders_forward, 0) < 40                     THEN 'Type B: Training Exporter'
+
         WHEN b.pct_insiders_backward BETWEEN 40 AND 60
          AND ISNULL(f.pct_insiders_forward, 0) BETWEEN 40 AND 60
-         AND ISNULL(r.pct_returnees, 0) > 7                            THEN 'Type C: Circulation Hub'
+         AND ISNULL(r.pct_returnees, 0) > 7                             THEN 'Type C: Circulation Hub'
+
         WHEN b.pct_insiders_backward > 60
          AND ISNULL(f.pct_insiders_forward, 0) > 60
-         AND ISNULL(r.pct_returnees, 0) < 2                            THEN 'Type D: Closed System'
+         AND ISNULL(r.pct_returnees, 0) < 2                             THEN 'Type D: Closed System'
+
         ELSE                                                                 'Mixed/Transitional'
     END AS system_type,
 
     -- MBI interpretation
     CASE
-        WHEN (b.pct_insiders_backward - ISNULL(f.pct_insiders_forward, 0)) > 20  THEN 'High asymmetry: Exports talent'
-        WHEN (b.pct_insiders_backward - ISNULL(f.pct_insiders_forward, 0)) < -10 THEN 'Negative asymmetry: Net attractor'
-        ELSE                                                                            'Relatively symmetric'
+        WHEN (b.pct_insiders_backward - ISNULL(f.pct_insiders_forward, 0)) >= 50
+            THEN 'Strong asymmetry: Exports talent'
+        WHEN (b.pct_insiders_backward - ISNULL(f.pct_insiders_forward, 0)) BETWEEN 35 AND 49
+            THEN 'Moderate asymmetry'
+        WHEN (b.pct_insiders_backward - ISNULL(f.pct_insiders_forward, 0)) BETWEEN 20 AND 34
+            THEN 'Mild asymmetry'
+        WHEN (b.pct_insiders_backward - ISNULL(f.pct_insiders_forward, 0)) < 20
+            THEN 'Relatively balanced / attractor-leaning'
+        ELSE 'Relatively balanced / attractor-leaning'
     END AS mbi_interpretation
 
 FROM #backward_country_stats b
 LEFT JOIN #forward_country_stats f   ON b.country_code = f.country_code
 LEFT JOIN #returnee_country_stats r  ON b.country_code = r.country_code
 LEFT JOIN #country_mapping cm        ON b.country_code = cm.iso_a3
+
+WHERE b.total_researchers_dest >= 5000
+
+ORDER BY
+    b.total_researchers_dest DESC;
+
+-- SECTION 6.6: Synthesis (MBI + Type)
+
+SELECT
+    b.country_code,
+    cm.country_name,
+    b.total_researchers_dest                                           AS n_destination_active,
+    CAST(b.pct_insiders_backward AS DECIMAL(6,2))                       AS pct_insiders_backward,
+    CAST(ISNULL(f.pct_insiders_forward, 0) AS DECIMAL(6,2))             AS pct_insiders_forward,
+    CAST(b.pct_insiders_backward - ISNULL(f.pct_insiders_forward, 0) AS DECIMAL(6,2))
+                                                                       AS mobility_balance_index,
+
+    CASE
+        WHEN b.pct_insiders_backward <= 40
+         AND ISNULL(f.pct_insiders_forward, 0) <= 12                    THEN 'Type A: Net Attractor'
+        WHEN b.pct_insiders_backward > 60
+         AND ISNULL(f.pct_insiders_forward, 0) < 40                     THEN 'Type B: Training Exporter'
+        WHEN b.pct_insiders_backward BETWEEN 40 AND 60
+         AND ISNULL(f.pct_insiders_forward, 0) BETWEEN 40 AND 60
+         AND ISNULL(r.pct_returnees, 0) > 7                             THEN 'Type C: Circulation Hub'
+        WHEN b.pct_insiders_backward > 60
+         AND ISNULL(f.pct_insiders_forward, 0) > 60
+         AND ISNULL(r.pct_returnees, 0) < 2                             THEN 'Type D: Closed System'
+        ELSE                                                                 'Mixed/Transitional'
+    END AS system_type
+
+FROM #backward_country_stats b
+LEFT JOIN #forward_country_stats f   ON b.country_code = f.country_code
+LEFT JOIN #returnee_country_stats r  ON b.country_code = r.country_code
+LEFT JOIN #country_mapping cm        ON b.country_code = cm.iso_a3
+-- WHERE b.total_researchers_dest >= 5000
 ORDER BY b.total_researchers_dest DESC;
 
 
@@ -1276,7 +1325,6 @@ ORDER BY origin_country_name, display_order, destination_country_name;
 
 
 -- 7.5 Inactive researcher detail: last observed location and timing
---     (focal countries only; year-range diagnostic)
 
 SELECT
     ic.origin_country,
