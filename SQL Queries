@@ -250,36 +250,7 @@ GROUP BY pa.researcher_id;
 CREATE INDEX ix_last_pub_year ON #last_pub_year (researcher_id, last_pub_year);
 
 
--- 3.2 All destination-window LR observations (used for returnee detection)
-IF OBJECT_ID('tempdb..#dest_window_LR_all_years', 'U') IS NOT NULL
-    DROP TABLE #dest_window_LR_all_years;
-
-SELECT DISTINCT
-    pa.researcher_id,
-    p.pub_year,
-    o.ror_id
-INTO #dest_window_LR_all_years
-FROM dimensions_2025jul.dbo.pub_author pa
-JOIN dimensions_2025jul.dbo.pub p
-    ON pa.pub_id = p.pub_id
-JOIN dimensions_2025jul.dbo.pub_author_affiliation paa
-    ON pa.pub_id = paa.pub_id
-   AND pa.author_seq = paa.author_seq
-JOIN dimensions_2025jul.dbo.pub_affiliation_organization pao
-    ON paa.pub_id = pao.pub_id
-   AND paa.affiliation_seq = pao.affiliation_seq
-JOIN dimensions_2025jul.dbo.organization o
-    ON pao.grid_id = o.grid_id
-JOIN #LR_Open_Unis lr
-    ON o.ror_id = lr.ror_id
-WHERE p.pub_year BETWEEN @last_start_year AND @last_end_year
-  AND pa.researcher_id IN (SELECT DISTINCT researcher_id FROM #last_pub_year);
-
-CREATE INDEX ix_dest_window_LR_all_years
-    ON #dest_window_LR_all_years (researcher_id, pub_year, ror_id);
-
-
--- 3.3 Last-year LR affiliations (destination window)
+-- 3.2 Last-year LR affiliations (destination window)
 IF OBJECT_ID('tempdb..#last_year_LR', 'U') IS NOT NULL
     DROP TABLE #last_year_LR;
 
@@ -312,6 +283,96 @@ LEFT JOIN #country_mapping cm
 
 CREATE INDEX ix_last_year_lr ON #last_year_LR (researcher_id, ror_id, country_code);
 
+
+-- SECTION 3.3: Returnee detection
+
+
+-- 3.3.1 Cohort author-paper-country rows (affiliation-level; cohort only)
+IF OBJECT_ID('tempdb..#apc', 'U') IS NOT NULL DROP TABLE #apc;
+
+SELECT
+    pa.researcher_id,
+    pa.pub_id,
+    pa.author_seq,
+    p.pub_year,
+    cm.iso_a3 AS aff_country,
+    CASE WHEN lr.ror_id IS NOT NULL THEN 1 ELSE 0 END AS is_lr
+INTO #apc
+FROM dimensions_2025jul.dbo.pub_author pa
+JOIN dimensions_2025jul.dbo.pub p
+    ON pa.pub_id = p.pub_id
+JOIN dimensions_2025jul.dbo.pub_author_affiliation paa
+    ON pa.pub_id = paa.pub_id AND pa.author_seq = paa.author_seq
+JOIN dimensions_2025jul.dbo.pub_affiliation_organization pao
+    ON paa.pub_id = pao.pub_id AND paa.affiliation_seq = pao.affiliation_seq
+JOIN dimensions_2025jul.dbo.organization org
+    ON pao.grid_id = org.grid_id
+LEFT JOIN #country_mapping cm
+    ON org.country_code = cm.iso_a2
+LEFT JOIN #lr_unis lr
+    ON org.ror_id = lr.ror_id
+WHERE pa.researcher_id IN (SELECT researcher_id FROM #origin_one)
+  AND p.pub_year IS NOT NULL;
+
+CREATE INDEX ix_apc ON #apc (researcher_id, pub_year, pub_id, author_seq);
+
+-- 3.3.2 Per author-paper flags relative to origin country
+IF OBJECT_ID('tempdb..#ap_flags', 'U') IS NOT NULL DROP TABLE #ap_flags;
+
+SELECT
+    o.researcher_id,
+    a.pub_id,
+    a.author_seq,
+    a.pub_year,
+    o.first_pub_year,
+    lp.last_pub_year,
+    o.origin_country,
+    MAX(CASE WHEN a.is_lr = 1 AND a.aff_country IS NOT NULL AND a.aff_country <> o.origin_country THEN 1 ELSE 0 END) AS has_foreign_lr,
+    MAX(CASE WHEN a.aff_country = o.origin_country THEN 1 ELSE 0 END) AS has_home_any
+INTO #ap_flags
+FROM #origin_one o
+JOIN #last_pub_year lp
+    ON lp.researcher_id = o.researcher_id
+JOIN #apc a
+    ON a.researcher_id = o.researcher_id
+GROUP BY
+    o.researcher_id, a.pub_id, a.author_seq, a.pub_year,
+    o.first_pub_year, lp.last_pub_year, o.origin_country;
+
+CREATE INDEX ix_ap_flags ON #ap_flags (researcher_id, pub_year, has_foreign_lr, has_home_any);
+
+-- 3.3.3 Returnees table (researcher-level)
+IF OBJECT_ID('tempdb..#returnees_optB1', 'U') IS NOT NULL DROP TABLE #returnees_optB1;
+
+SELECT DISTINCT
+    o.researcher_id,
+    1 AS is_returnee
+INTO #returnees_optB1
+FROM #origin_one o
+JOIN #last_pub_year lp
+    ON lp.researcher_id = o.researcher_id
+WHERE
+    -- last publication year has an LR affiliation in origin country
+    EXISTS (
+        SELECT 1
+        FROM #last_year_LR ly
+        WHERE ly.researcher_id = o.researcher_id
+          AND ly.pub_year      = lp.last_pub_year
+          AND ly.country_code  = o.origin_country
+    )
+    AND
+    -- exclusive abroad at LR occurs strictly between first and last
+    EXISTS (
+        SELECT 1
+        FROM #ap_flags f
+        WHERE f.researcher_id = o.researcher_id
+          AND f.pub_year > o.first_pub_year
+          AND f.pub_year < lp.last_pub_year
+          AND f.has_foreign_lr = 1
+          AND f.has_home_any   = 0
+    );
+
+CREATE INDEX ix_returnees_optB1 ON #returnees_optB1 (researcher_id);
 
 -- ============================================
 -- SECTION 4: RESEARCHER STATUS CLASSIFICATION
@@ -491,32 +552,10 @@ IF OBJECT_ID('tempdb..#forward_mobility', 'U') IS NOT NULL
 WITH origin_base AS (
     SELECT DISTINCT
         fy.researcher_id,
-        fy.ror_id            AS origin_ror_id,
+        fy.ror_id             AS origin_ror_id,
         fy.lr_university_name AS origin_university,
-        fy.country_code      AS origin_country
+        fy.country_code       AS origin_country
     FROM #first_year_LR fy
-),
-returnee_base AS (
-    SELECT
-        o.researcher_id,
-        o.origin_ror_id,
-        CASE
-            WHEN EXISTS (
-                SELECT 1 FROM #last_year_LR ly
-                WHERE ly.researcher_id = o.researcher_id
-                  AND ly.country_code  = o.origin_country
-            )
-            AND EXISTS (
-                SELECT 1
-                FROM #dest_window_LR_all_years dw
-                JOIN #lr_unis lr        ON dw.ror_id           = lr.ror_id
-                JOIN #country_mapping cm ON lr.lr_country_code = cm.iso_a2
-                WHERE dw.researcher_id = o.researcher_id
-                  AND cm.iso_a3 <> o.origin_country
-            )
-            THEN 1 ELSE 0
-        END AS is_returnee
-    FROM origin_base o
 )
 SELECT
     o.researcher_id,
@@ -543,12 +582,11 @@ SELECT
         ) THEN 'Outside LR / missing affiliation'
         ELSE 'No publications in analysis window'
     END AS status,
-    ISNULL(rb.is_returnee, 0) AS is_returnee
+    CASE WHEN r.researcher_id IS NOT NULL THEN 1 ELSE 0 END AS is_returnee
 INTO #forward_mobility
 FROM origin_base o
-LEFT JOIN returnee_base rb
-    ON o.researcher_id = rb.researcher_id
-   AND o.origin_ror_id  = rb.origin_ror_id;
+LEFT JOIN #returnees_optB1 r
+    ON r.researcher_id = o.researcher_id;
 
 CREATE INDEX ix_forward_mobility
     ON #forward_mobility (origin_country, origin_ror_id, status, researcher_id);
@@ -636,10 +674,13 @@ IF OBJECT_ID('tempdb..#backward_mobility', 'U') IS NOT NULL
 WITH dest_base AS (
     SELECT DISTINCT
         ly.researcher_id,
-        ly.ror_id            AS dest_ror_id,
+        ly.ror_id             AS dest_ror_id,
         ly.lr_university_name AS dest_university,
-        ly.country_code      AS dest_country
+        ly.country_code       AS dest_country,
+        o.origin_country
     FROM #last_year_LR ly
+    JOIN #origin_one o
+        ON ly.researcher_id = o.researcher_id
 )
 SELECT
     d.researcher_id,
@@ -660,23 +701,10 @@ SELECT
         ) THEN 'Domestic outsider'
         ELSE 'Foreign outsider'
     END AS status,
-    CASE
-        WHEN EXISTS (
-            SELECT 1 FROM #first_year_LR fy
-            WHERE fy.researcher_id = d.researcher_id AND fy.country_code = d.dest_country
-        )
-        AND EXISTS (
-            SELECT 1
-            FROM #dest_window_LR_all_years dw
-            JOIN #lr_unis lr        ON dw.ror_id           = lr.ror_id
-            JOIN #country_mapping cm ON lr.lr_country_code = cm.iso_a2
-            WHERE dw.researcher_id = d.researcher_id
-              AND cm.iso_a3 <> d.dest_country
-        )
-        THEN 1 ELSE 0
-    END AS is_returnee
+    CASE WHEN r.researcher_id IS NOT NULL AND d.dest_country = d.origin_country THEN 1 ELSE 0 END AS is_returnee
 INTO #backward_mobility
-FROM dest_base d;
+FROM dest_base d
+LEFT JOIN #returnees_optB1 r ON r.researcher_id = d.researcher_id;
 
 CREATE INDEX ix_backward_mobility
     ON #backward_mobility (dest_country, dest_ror_id, status, researcher_id);
